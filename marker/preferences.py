@@ -1,13 +1,12 @@
-"""Preferences window for Marker."""
+"""Preferences window for Marker (compatible with libadwaita 1.1)."""
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 
-# GSettings schema ID (or simple dict-based settings for now)
 _DEFAULTS = {
     "font-family": "Monospace",
     "font-size": 13,
@@ -20,7 +19,6 @@ _DEFAULTS = {
 
 
 class Settings:
-    """Simple in-memory settings store (no GSettings schema needed)."""
     _instance = None
     _data: dict = {}
 
@@ -38,119 +36,110 @@ class Settings:
         self._data[key] = value
 
 
+def _spin(value, lo, hi, step=1) -> Gtk.SpinButton:
+    adj = Gtk.Adjustment(value=value, lower=lo, upper=hi, step_increment=step)
+    btn = Gtk.SpinButton(adjustment=adj, digits=0)
+    btn.set_valign(Gtk.Align.CENTER)
+    btn.set_width_chars(5)
+    return btn
+
+
+def _switch(active: bool) -> Gtk.Switch:
+    sw = Gtk.Switch(active=active)
+    sw.set_valign(Gtk.Align.CENTER)
+    return sw
+
+
+def _action_row(title, subtitle, widget) -> Adw.ActionRow:
+    row = Adw.ActionRow(title=title, subtitle=subtitle)
+    row.add_suffix(widget)
+    row.set_activatable_widget(widget)
+    return row
+
+
 class PreferencesWindow(Adw.PreferencesWindow):
     def __init__(self, editor, **kwargs):
         super().__init__(**kwargs)
         self.set_title("Preferences")
-        self.set_default_size(480, 520)
+        self.set_default_size(480, 480)
+        self.set_search_enabled(False)
         self._editor = editor
         self._settings = Settings.get()
-
         self._build_ui()
 
     def _build_ui(self):
-        # ── Editor page ────────────────────────────────────────────────────
-        editor_page = Adw.PreferencesPage(title="Editor", icon_name="accessories-text-editor-symbolic")
+        page = Adw.PreferencesPage(
+            title="Editor",
+            icon_name="accessories-text-editor-symbolic",
+        )
 
-        # Font group
+        # ── Font ──────────────────────────────────────────────────────────
         font_group = Adw.PreferencesGroup(title="Font")
 
-        font_row = Adw.ActionRow(title="Font Family")
         self._font_entry = Gtk.Entry(text=self._settings["font-family"])
         self._font_entry.set_valign(Gtk.Align.CENTER)
-        font_row.add_suffix(self._font_entry)
-        font_group.add(font_row)
+        self._font_entry.set_width_chars(16)
+        font_group.add(_action_row("Font Family", "Editor font name", self._font_entry))
 
-        size_row = Adw.SpinRow(
-            title="Font Size",
-            subtitle="Points",
-        )
-        adj = Gtk.Adjustment(
-            value=self._settings["font-size"],
-            lower=8,
-            upper=32,
-            step_increment=1,
-        )
-        size_row.set_adjustment(adj)
-        font_group.add(size_row)
+        self._font_size = _spin(self._settings["font-size"], 8, 32)
+        font_group.add(_action_row("Font Size", "Size in points", self._font_size))
 
-        editor_page.add(font_group)
+        page.add(font_group)
 
-        # Editing group
-        editing_group = Adw.PreferencesGroup(title="Editing")
+        # ── Editing ───────────────────────────────────────────────────────
+        edit_group = Adw.PreferencesGroup(title="Editing")
 
-        tab_row = Adw.SpinRow(title="Tab Width", subtitle="Spaces per tab")
-        tab_adj = Gtk.Adjustment(
-            value=self._settings["tab-width"],
-            lower=1,
-            upper=8,
-            step_increment=1,
-        )
-        tab_row.set_adjustment(tab_adj)
-        editing_group.add(tab_row)
+        self._tab_width = _spin(self._settings["tab-width"], 1, 8)
+        edit_group.add(_action_row("Tab Width", "Spaces per tab", self._tab_width))
 
-        wrap_row = Adw.SwitchRow(
-            title="Word Wrap",
-            subtitle="Wrap long lines at word boundaries",
-        )
-        wrap_row.set_active(self._settings["word-wrap"])
-        editing_group.add(wrap_row)
+        self._word_wrap = _switch(self._settings["word-wrap"])
+        edit_group.add(_action_row("Word Wrap", "Wrap long lines at word boundaries", self._word_wrap))
 
-        lines_row = Adw.SwitchRow(
-            title="Line Numbers",
-            subtitle="Show line numbers in the gutter",
-        )
-        lines_row.set_active(self._settings["line-numbers"])
-        editing_group.add(lines_row)
+        self._line_numbers = _switch(self._settings["line-numbers"])
+        edit_group.add(_action_row("Line Numbers", "Show line numbers in the gutter", self._line_numbers))
 
-        editor_page.add(editing_group)
+        page.add(edit_group)
 
-        # Auto-save group
-        autosave_group = Adw.PreferencesGroup(title="Auto-save")
+        # ── Auto-save ─────────────────────────────────────────────────────
+        save_group = Adw.PreferencesGroup(title="Auto-save")
 
-        autosave_row = Adw.SwitchRow(
-            title="Auto-save",
-            subtitle="Automatically save changes",
-        )
-        autosave_row.set_active(self._settings["auto-save"])
-        autosave_group.add(autosave_row)
+        self._auto_save = _switch(self._settings["auto-save"])
+        save_group.add(_action_row("Auto-save", "Automatically save changes", self._auto_save))
 
-        autosave_delay_row = Adw.SpinRow(
-            title="Auto-save Delay",
-            subtitle="Seconds between saves",
-        )
-        delay_adj = Gtk.Adjustment(
-            value=self._settings["auto-save-delay"],
-            lower=5,
-            upper=300,
-            step_increment=5,
-        )
-        autosave_delay_row.set_adjustment(delay_adj)
-        autosave_group.add(autosave_delay_row)
+        self._auto_save_delay = _spin(self._settings["auto-save-delay"], 5, 300, step=5)
+        save_group.add(_action_row("Delay (seconds)", "Time between auto-saves", self._auto_save_delay))
 
-        editor_page.add(autosave_group)
+        page.add(save_group)
 
-        self.add(editor_page)
+        self.add(page)
 
-        # Apply button
-        apply_btn = Gtk.Button(label="Apply", halign=Gtk.Align.END)
+        # Apply button in the header
+        apply_btn = Gtk.Button(label="Apply")
         apply_btn.add_css_class("suggested-action")
-        apply_btn.set_margin_end(16)
-        apply_btn.set_margin_bottom(16)
+        apply_btn.connect("clicked", self._on_apply)
+        self.add_action_widget(apply_btn) if hasattr(self, "add_action_widget") else None
 
-        def on_apply(_):
-            self._settings["font-family"] = self._font_entry.get_text()
-            self._settings["font-size"] = int(size_row.get_value())
-            self._settings["tab-width"] = int(tab_row.get_value())
-            self._settings["word-wrap"] = wrap_row.get_active()
-            self._settings["line-numbers"] = lines_row.get_active()
-            self._settings["auto-save"] = autosave_row.get_active()
-            self._settings["auto-save-delay"] = int(autosave_delay_row.get_value())
-            self._apply_to_editor()
-            self.close()
+        # Fallback: connect to close
+        self.connect("close-request", self._on_close)
 
-        apply_btn.connect("clicked", on_apply)
-        editor_page.set_header_suffix(apply_btn)
+    def _on_apply(self, _btn):
+        self._save_settings()
+        self.close()
+
+    def _on_close(self, _win):
+        self._save_settings()
+        return False  # allow close
+
+    def _save_settings(self):
+        s = self._settings
+        s["font-family"] = self._font_entry.get_text().strip() or "Monospace"
+        s["font-size"] = int(self._font_size.get_value())
+        s["tab-width"] = int(self._tab_width.get_value())
+        s["word-wrap"] = self._word_wrap.get_active()
+        s["line-numbers"] = self._line_numbers.get_active()
+        s["auto-save"] = self._auto_save.get_active()
+        s["auto-save-delay"] = int(self._auto_save_delay.get_value())
+        self._apply_to_editor()
 
     def _apply_to_editor(self):
         s = self._settings
