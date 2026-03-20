@@ -1,6 +1,7 @@
 """File open/save/new operations and dirty state tracking."""
 
 import os
+from typing import Callable
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -67,15 +68,17 @@ class FileManager(GObject.Object):
     # ── Operations ─────────────────────────────────────────────────────────
 
     def new_file(self):
-        if not self._confirm_discard():
-            return
+        self._with_discard_check(self._do_new_file)
+
+    def _do_new_file(self):
         self._editor.set_text("")
         self._set_path(None)
         self._editor.grab_focus()
 
     def open_file(self, path: str):
-        if not self._confirm_discard():
-            return
+        self._with_discard_check(lambda: self._do_open_file(path))
+
+    def _do_open_file(self, path: str):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
@@ -92,8 +95,9 @@ class FileManager(GObject.Object):
         explorer.set_root(folder)
 
     def open_file_dialog(self):
-        if not self._confirm_discard():
-            return
+        self._with_discard_check(self._show_open_dialog)
+
+    def _show_open_dialog(self):
         dialog = Gtk.FileDialog(title="Open File")
         filter_md = Gtk.FileFilter()
         filter_md.set_name("Markdown & Text")
@@ -108,7 +112,6 @@ class FileManager(GObject.Object):
         filters.append(filter_md)
         filters.append(filter_all)
         dialog.set_filters(filters)
-
         dialog.open(self._window, None, self._on_open_dialog_done)
 
     def _on_open_dialog_done(self, dialog, result):
@@ -117,7 +120,7 @@ class FileManager(GObject.Object):
         except Exception:
             return
         if gfile:
-            self.open_file(gfile.get_path())
+            self._do_open_file(gfile.get_path())
 
     def save_file(self):
         if self._current_path:
@@ -148,15 +151,15 @@ class FileManager(GObject.Object):
         self._set_path(path)
 
     def close_file(self):
-        if not self._confirm_discard():
-            return
-        self._editor.set_text("")
-        self._set_path(None)
+        self._with_discard_check(self._do_new_file)
 
-    def _confirm_discard(self) -> bool:
-        """Returns True if safe to discard changes."""
+    # ── Unsaved changes dialog (async) ─────────────────────────────────────
+
+    def _with_discard_check(self, callback: Callable):
+        """Run callback, asking the user first if there are unsaved changes."""
         if not self._is_modified:
-            return True
+            callback()
+            return
 
         dialog = Adw.MessageDialog(
             transient_for=self._window,
@@ -170,30 +173,17 @@ class FileManager(GObject.Object):
         dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
 
-        result = {"response": None}
+        def on_response(d, response):
+            if response == "save":
+                self.save_file()
+                callback()
+            elif response == "discard":
+                self._is_modified = False
+                callback()
+            # "cancel" → do nothing
 
-        loop = None
-        try:
-            from gi.repository import GLib
-            loop = GLib.MainLoop()
-
-            def on_response(d, response):
-                result["response"] = response
-                loop.quit()
-
-            dialog.connect("response", on_response)
-            dialog.present()
-            loop.run()
-        except Exception:
-            return True
-
-        response = result["response"]
-        if response == "save":
-            self.save_file()
-            return True
-        elif response == "discard":
-            return True
-        return False  # cancel
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _show_error(self, title: str, message: str):
         dialog = Adw.MessageDialog(
