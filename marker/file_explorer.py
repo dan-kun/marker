@@ -283,15 +283,21 @@ class FileExplorer(Gtk.Box):
         return False
 
     def _on_open_folder_clicked(self, btn):
-        dialog = Gtk.FileDialog(title="Open Folder")
-        # Get the window from parent hierarchy
         parent = self.get_root()
-        dialog.select_folder(parent, None, self._on_folder_selected)
+        dialog = Gtk.FileChooserNative(
+            title="Open Folder",
+            transient_for=parent,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            accept_label="_Open",
+            cancel_label="_Cancel",
+        )
+        dialog.connect("response", self._on_folder_selected)
+        dialog.show()
+        self._folder_dialog = dialog  # keep reference
 
-    def _on_folder_selected(self, dialog, result):
-        try:
-            gfile = dialog.select_folder_finish(result)
-        except Exception:
-            return
-        if gfile:
-            self.set_root(gfile.get_path())
+    def _on_folder_selected(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile:
+                self.set_root(gfile.get_path())
+        self._folder_dialog = None

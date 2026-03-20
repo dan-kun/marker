@@ -98,29 +98,35 @@ class FileManager(GObject.Object):
         self._with_discard_check(self._show_open_dialog)
 
     def _show_open_dialog(self):
-        dialog = Gtk.FileDialog(title="Open File")
         filter_md = Gtk.FileFilter()
         filter_md.set_name("Markdown & Text")
         for pat in ("*.md", "*.markdown", "*.txt", "*.rst"):
             filter_md.add_pattern(pat)
 
+        dialog = Gtk.FileChooserNative(
+            title="Open File",
+            transient_for=self._window,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="_Open",
+            cancel_label="_Cancel",
+        )
+        dialog.add_filter(filter_md)
+
         filter_all = Gtk.FileFilter()
         filter_all.set_name("All files")
         filter_all.add_pattern("*")
+        dialog.add_filter(filter_all)
 
-        filters = Gio.ListStore.new(Gtk.FileFilter)
-        filters.append(filter_md)
-        filters.append(filter_all)
-        dialog.set_filters(filters)
-        dialog.open(self._window, None, self._on_open_dialog_done)
+        dialog.connect("response", self._on_open_dialog_done)
+        dialog.show()
+        self._open_dialog = dialog  # keep reference
 
-    def _on_open_dialog_done(self, dialog, result):
-        try:
-            gfile = dialog.open_finish(result)
-        except Exception:
-            return
-        if gfile:
-            self._do_open_file(gfile.get_path())
+    def _on_open_dialog_done(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile:
+                self._do_open_file(gfile.get_path())
+        self._open_dialog = None
 
     def save_file(self):
         if self._current_path:
@@ -129,16 +135,26 @@ class FileManager(GObject.Object):
             self.save_file_as()
 
     def save_file_as(self):
-        dialog = Gtk.FileDialog(title="Save File As")
-        dialog.save(self._window, None, self._on_save_dialog_done)
+        dialog = Gtk.FileChooserNative(
+            title="Save File As",
+            transient_for=self._window,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="_Save",
+            cancel_label="_Cancel",
+        )
+        if self._current_path:
+            import os
+            dialog.set_current_name(os.path.basename(self._current_path))
+        dialog.connect("response", self._on_save_dialog_done)
+        dialog.show()
+        self._save_dialog = dialog  # keep reference
 
-    def _on_save_dialog_done(self, dialog, result):
-        try:
-            gfile = dialog.save_finish(result)
-        except Exception:
-            return
-        if gfile:
-            self._write_file(gfile.get_path())
+    def _on_save_dialog_done(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile:
+                self._write_file(gfile.get_path())
+        self._save_dialog = None
 
     def _write_file(self, path: str):
         text = self._editor.get_text()
