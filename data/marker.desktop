@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Marker
+GenericName=Markdown Editor
+Comment=Markdown and TXT viewer/editor
+Exec=/home/daniel/codigos_claude/marker/bin/marker %F
+Icon=marker
+Terminal=false
+Categories=Office;TextEditor;Utility;
+MimeType=text/markdown;text/x-markdown;text/plain;
+Keywords=markdown;text;editor;viewer;md;
+StartupWMClass=marker
+StartupNotify=true

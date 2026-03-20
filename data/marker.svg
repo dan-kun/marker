@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e88e5"/>
+      <stop offset="100%" style="stop-color:#1565c0"/>
+    </linearGradient>
+    <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#42a5f5"/>
+      <stop offset="100%" style="stop-color:#1e88e5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded rectangle -->
+  <rect x="4" y="4" width="120" height="120" rx="22" ry="22" fill="url(#bg)"/>
+
+  <!-- Subtle top shine -->
+  <rect x="4" y="4" width="120" height="52" rx="22" ry="22" fill="url(#bg2)" opacity="0.35"/>
+
+  <!-- Document shape (white, slightly inset) -->
+  <rect x="22" y="18" width="68" height="84" rx="6" ry="6" fill="white" opacity="0.12"/>
+  <rect x="22" y="18" width="68" height="84" rx="6" ry="6" fill="none" stroke="white" stroke-width="1.5" opacity="0.25"/>
+
+  <!-- M letter (bold, centered) -->
+  <text x="64" y="88"
+        font-family="'DejaVu Sans', 'Liberation Sans', sans-serif"
+        font-weight="900"
+        font-size="72"
+        fill="white"
+        text-anchor="middle"
+        dominant-baseline="auto"
+        letter-spacing="-2">M</text>
+
+  <!-- Small markdown arrow hint under the M -->
+  <path d="M 46 102 L 64 116 L 82 102" fill="none" stroke="white" stroke-width="4"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+</svg>
