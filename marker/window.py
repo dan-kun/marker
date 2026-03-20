@@ -43,20 +43,21 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._header = self._build_header()
         root_box.append(self._header)
 
-        # Content area: sidebar + main pane
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        content.set_vexpand(True)
+        # Content area: sidebar | main pane  (both resizable via Gtk.Paned)
+        self._sidebar_width = 240  # last known width when visible
 
-        # Sidebar (file explorer)
-        self._sidebar_revealer = Gtk.Revealer(
-            transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT,
-            reveal_child=True,
-        )
-        sidebar_frame = Gtk.Frame()
-        sidebar_frame.set_child(self.file_explorer)
-        sidebar_frame.add_css_class("sidebar-frame")
-        self._sidebar_revealer.set_child(sidebar_frame)
-        content.append(self._sidebar_revealer)
+        self._content_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self._content_paned.set_vexpand(True)
+        self._content_paned.set_shrink_start_child(False)
+        self._content_paned.set_shrink_end_child(False)
+        self._content_paned.set_resize_start_child(False)
+        self._content_paned.set_resize_end_child(True)
+        self._content_paned.set_position(self._sidebar_width)
+
+        # Track manual resizes so toggle restores the right width
+        self._content_paned.connect("notify::position", self._on_sidebar_paned_moved)
+
+        self._content_paned.set_start_child(self.file_explorer)
 
         # Split view (editor + preview)
         self.split_view = SplitView(self.editor, self.preview)
@@ -67,8 +68,8 @@ class MarkerWindow(Adw.ApplicationWindow):
         editor_box.append(self.search_bar)
         editor_box.append(self.split_view)
 
-        content.append(editor_box)
-        root_box.append(content)
+        self._content_paned.set_end_child(editor_box)
+        root_box.append(self._content_paned)
 
         # Status bar
         self._statusbar = self._build_statusbar()
@@ -113,16 +114,16 @@ class MarkerWindow(Adw.ApplicationWindow):
         view_box.add_css_class("linked")
 
         self._btn_editor_only = Gtk.ToggleButton(
-            icon_name="accessories-text-editor-symbolic",
+            icon_name="text-editor-symbolic",
             tooltip_text="Editor only",
         )
         self._btn_split = Gtk.ToggleButton(
-            icon_name="view-split-symbolic",
+            icon_name="view-dual-symbolic",
             tooltip_text="Split view (Ctrl+E)",
             group=self._btn_editor_only,
         )
         self._btn_preview_only = Gtk.ToggleButton(
-            icon_name="document-preview-symbolic",
+            icon_name="view-paged-symbolic",
             tooltip_text="Preview only (Ctrl+Shift+P)",
             group=self._btn_editor_only,
         )
@@ -267,8 +268,17 @@ class MarkerWindow(Adw.ApplicationWindow):
     def _on_explorer_file_activated(self, explorer, path):
         self.file_manager.open_file(path)
 
+    def _on_sidebar_paned_moved(self, paned, param):
+        pos = paned.get_position()
+        if pos > 40:  # only save when actually visible
+            self._sidebar_width = pos
+
     def _on_sidebar_toggled(self, btn):
-        self._sidebar_revealer.set_reveal_child(btn.get_active())
+        if btn.get_active():
+            self._content_paned.set_position(self._sidebar_width)
+        else:
+            self._sidebar_width = max(self._content_paned.get_position(), 240)
+            self._content_paned.set_position(0)
 
     # ── Action Callbacks ───────────────────────────────────────────────────
 
@@ -310,9 +320,9 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._btn_preview_only.set_active(True)
 
     def _action_toggle_sidebar(self, *_):
-        current = self._sidebar_revealer.get_reveal_child()
-        self._sidebar_revealer.set_reveal_child(not current)
+        current = self._btn_sidebar.get_active()
         self._btn_sidebar.set_active(not current)
+        # _on_sidebar_toggled fires via the toggled signal
 
     def _action_fullscreen(self, *_):
         if self.is_fullscreen():
