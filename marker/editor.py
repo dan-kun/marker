@@ -5,7 +5,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GObject, Pango
+from gi.repository import Gtk, GtkSource, GObject
 
 
 class MarkdownEditor(Gtk.ScrolledWindow):
@@ -20,8 +20,10 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         super().__init__()
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
+        self._font_family = "Monospace"
         self._font_size = 13
         self._zoom_level = 1.0
+        self._css_provider = Gtk.CssProvider()
 
         self._setup_buffer()
         self._setup_view()
@@ -36,7 +38,7 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._buffer.set_language(self._lang_md)
         self._buffer.set_highlight_syntax(True)
         self._buffer.set_highlight_matching_brackets(True)
-        self._buffer.set_max_undo_levels(-1)  # unlimited
+        self._buffer.set_max_undo_levels(0)  # 0 = unlimited in GtkSource
 
         self._apply_scheme()
         self._buffer.connect("changed", self._on_buffer_changed)
@@ -71,8 +73,11 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def _update_font(self):
         size = int(self._font_size * self._zoom_level)
-        font_desc = Pango.FontDescription.from_string(f"Monospace {size}")
-        self._view.override_font(font_desc)
+        css = f"textview {{ font-family: {self._font_family}; font-size: {size}pt; }}"
+        self._css_provider.load_from_data(css.encode())
+        self._view.get_style_context().add_provider(
+            self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
@@ -114,9 +119,9 @@ class MarkdownEditor(Gtk.ScrolledWindow):
             self._view.set_wrap_mode(Gtk.WrapMode.NONE)
 
     def set_font(self, font_name: str, size: int):
+        self._font_family = font_name
         self._font_size = size
-        font_desc = Pango.FontDescription.from_string(f"{font_name} {int(size * self._zoom_level)}")
-        self._view.override_font(font_desc)
+        self._update_font()
 
     def set_tab_width(self, width: int):
         self._view.set_tab_width(width)
