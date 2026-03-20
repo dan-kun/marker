@@ -1,0 +1,376 @@
+"""Main application window for Marker."""
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+from gi.repository import Gtk, Adw, Gio, GLib
+from .editor import MarkdownEditor
+from .preview import MarkdownPreview
+from .split_view import SplitView
+from .file_manager import FileManager
+from .file_explorer import FileExplorer
+from .search import SearchBar
+
+
+class MarkerWindow(Adw.ApplicationWindow):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.set_title("Marker")
+        self.set_default_size(1200, 800)
+
+        # Core components
+        self.editor = MarkdownEditor()
+        self.preview = MarkdownPreview()
+        self.file_manager = FileManager(self)
+        self.search_bar = SearchBar(self.editor)
+        self.file_explorer = FileExplorer()
+
+        self._build_ui()
+        self._setup_actions()
+        self._setup_shortcuts()
+        self._connect_signals()
+
+    # ── UI Construction ────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        # Root: vertical box
+        root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # Header bar
+        self._header = self._build_header()
+        root_box.append(self._header)
+
+        # Content area: sidebar + main pane
+        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        content.set_vexpand(True)
+
+        # Sidebar (file explorer)
+        self._sidebar_revealer = Gtk.Revealer(
+            transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT,
+            reveal_child=True,
+        )
+        sidebar_frame = Gtk.Frame()
+        sidebar_frame.set_child(self.file_explorer)
+        sidebar_frame.add_css_class("sidebar-frame")
+        self._sidebar_revealer.set_child(sidebar_frame)
+        content.append(self._sidebar_revealer)
+
+        # Split view (editor + preview)
+        self.split_view = SplitView(self.editor, self.preview)
+        self.split_view.set_hexpand(True)
+
+        editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        editor_box.set_hexpand(True)
+        editor_box.append(self.search_bar)
+        editor_box.append(self.split_view)
+
+        content.append(editor_box)
+        root_box.append(content)
+
+        # Status bar
+        self._statusbar = self._build_statusbar()
+        root_box.append(self._statusbar)
+
+        self.set_content(root_box)
+
+    def _build_header(self):
+        header = Adw.HeaderBar()
+
+        # Left side buttons
+        left_box = Gtk.Box(spacing=4)
+
+        btn_new = Gtk.Button(icon_name="document-new-symbolic", tooltip_text="New file (Ctrl+N)")
+        btn_new.connect("clicked", lambda _: self.file_manager.new_file())
+        left_box.append(btn_new)
+
+        btn_open = Gtk.Button(icon_name="document-open-symbolic", tooltip_text="Open file (Ctrl+O)")
+        btn_open.connect("clicked", lambda _: self.file_manager.open_file_dialog())
+        left_box.append(btn_open)
+
+        btn_save = Gtk.Button(icon_name="document-save-symbolic", tooltip_text="Save (Ctrl+S)")
+        btn_save.connect("clicked", lambda _: self.file_manager.save_file())
+        left_box.append(btn_save)
+
+        header.pack_start(left_box)
+
+        # Right side buttons
+        right_box = Gtk.Box(spacing=4)
+
+        btn_sidebar = Gtk.ToggleButton(
+            icon_name="sidebar-show-symbolic",
+            tooltip_text="Toggle sidebar (Ctrl+\\)",
+            active=True,
+        )
+        btn_sidebar.connect("toggled", self._on_sidebar_toggled)
+        self._btn_sidebar = btn_sidebar
+        right_box.append(btn_sidebar)
+
+        # View mode buttons
+        view_box = Gtk.Box()
+        view_box.add_css_class("linked")
+
+        self._btn_editor_only = Gtk.ToggleButton(
+            icon_name="accessories-text-editor-symbolic",
+            tooltip_text="Editor only",
+        )
+        self._btn_split = Gtk.ToggleButton(
+            icon_name="view-split-symbolic",
+            tooltip_text="Split view (Ctrl+E)",
+            group=self._btn_editor_only,
+        )
+        self._btn_preview_only = Gtk.ToggleButton(
+            icon_name="document-preview-symbolic",
+            tooltip_text="Preview only (Ctrl+Shift+P)",
+            group=self._btn_editor_only,
+        )
+
+        self._btn_split.set_active(True)
+        self._btn_editor_only.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("editor"))
+        self._btn_split.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("split"))
+        self._btn_preview_only.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("preview"))
+
+        view_box.append(self._btn_editor_only)
+        view_box.append(self._btn_split)
+        view_box.append(self._btn_preview_only)
+        right_box.append(view_box)
+
+        # Menu button
+        menu_button = Gtk.MenuButton(
+            icon_name="open-menu-symbolic",
+            tooltip_text="Menu",
+        )
+        menu = Gio.Menu()
+        menu.append("Preferences", "win.preferences")
+        menu.append("Keyboard shortcuts", "win.show-shortcuts")
+        menu.append("About Marker", "app.about")
+        menu_button.set_menu_model(menu)
+        right_box.append(menu_button)
+
+        header.pack_end(right_box)
+
+        # Title widget - shows filename
+        self._title_widget = Adw.WindowTitle(title="Marker", subtitle="")
+        header.set_title_widget(self._title_widget)
+
+        return header
+
+    def _build_statusbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        bar.add_css_class("statusbar")
+        bar.set_margin_start(8)
+        bar.set_margin_end(8)
+        bar.set_margin_top(2)
+        bar.set_margin_bottom(2)
+
+        self._status_pos = Gtk.Label(label="Ln 1, Col 1", xalign=0)
+        self._status_pos.add_css_class("dim-label")
+        bar.append(self._status_pos)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        bar.append(sep)
+
+        self._status_words = Gtk.Label(label="0 words", xalign=0)
+        self._status_words.add_css_class("dim-label")
+        bar.append(self._status_words)
+
+        spacer = Gtk.Label()
+        spacer.set_hexpand(True)
+        bar.append(spacer)
+
+        self._status_encoding = Gtk.Label(label="UTF-8", xalign=1)
+        self._status_encoding.add_css_class("dim-label")
+        bar.append(self._status_encoding)
+
+        return bar
+
+    # ── Actions ────────────────────────────────────────────────────────────
+
+    def _setup_actions(self):
+        actions = [
+            ("new-file", self._action_new_file),
+            ("open-file", self._action_open_file),
+            ("save-file", self._action_save_file),
+            ("save-file-as", self._action_save_file_as),
+            ("close-file", self._action_close_file),
+            ("find", self._action_find),
+            ("find-replace", self._action_find_replace),
+            ("find-in-dir", self._action_find_in_dir),
+            ("toggle-split", self._action_toggle_split),
+            ("preview-only", self._action_preview_only),
+            ("toggle-sidebar", self._action_toggle_sidebar),
+            ("fullscreen", self._action_fullscreen),
+            ("zoom-in", self._action_zoom_in),
+            ("zoom-out", self._action_zoom_out),
+            ("zoom-reset", self._action_zoom_reset),
+            ("goto-line", self._action_goto_line),
+            ("preferences", self._action_preferences),
+            ("show-shortcuts", self._action_show_shortcuts),
+        ]
+        for name, callback in actions:
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+
+    def _setup_shortcuts(self):
+        app = self.get_application()
+        accel_map = {
+            "win.new-file": ["<Ctrl>n"],
+            "win.open-file": ["<Ctrl>o"],
+            "win.save-file": ["<Ctrl>s"],
+            "win.save-file-as": ["<Ctrl><Shift>s"],
+            "win.close-file": ["<Ctrl>w"],
+            "win.find": ["<Ctrl>f"],
+            "win.find-replace": ["<Ctrl>h"],
+            "win.find-in-dir": ["<Ctrl><Shift>f"],
+            "win.toggle-split": ["<Ctrl>e"],
+            "win.preview-only": ["<Ctrl><Shift>p"],
+            "win.toggle-sidebar": ["<Ctrl>backslash"],
+            "win.fullscreen": ["F11"],
+            "win.zoom-in": ["<Ctrl>plus", "<Ctrl>equal"],
+            "win.zoom-out": ["<Ctrl>minus"],
+            "win.zoom-reset": ["<Ctrl>0"],
+            "win.goto-line": ["<Ctrl>g"],
+            "win.preferences": ["<Ctrl>comma"],
+        }
+        for action, accels in accel_map.items():
+            app.set_accels_for_action(action, accels)
+
+    # ── Signals ────────────────────────────────────────────────────────────
+
+    def _connect_signals(self):
+        self.editor.connect("cursor-moved", self._on_cursor_moved)
+        self.editor.connect("content-changed", self._on_content_changed)
+        self.file_manager.connect("file-changed", self._on_file_changed)
+        self.file_explorer.connect("file-activated", self._on_explorer_file_activated)
+
+    def _on_cursor_moved(self, editor, line, col):
+        self._status_pos.set_text(f"Ln {line}, Col {col}")
+
+    def _on_content_changed(self, editor, text):
+        words = len(text.split()) if text.strip() else 0
+        self._status_words.set_text(f"{words} words")
+
+    def _on_file_changed(self, fm, path, is_modified):
+        if path:
+            import os
+            name = os.path.basename(path)
+            title = f"{'• ' if is_modified else ''}{name}"
+            self._title_widget.set_title(title)
+            self._title_widget.set_subtitle(path)
+        else:
+            self._title_widget.set_title("Marker")
+            self._title_widget.set_subtitle("")
+
+    def _on_explorer_file_activated(self, explorer, path):
+        self.file_manager.open_file(path)
+
+    def _on_sidebar_toggled(self, btn):
+        self._sidebar_revealer.set_reveal_child(btn.get_active())
+
+    # ── Action Callbacks ───────────────────────────────────────────────────
+
+    def _action_new_file(self, *_):
+        self.file_manager.new_file()
+
+    def _action_open_file(self, *_):
+        self.file_manager.open_file_dialog()
+
+    def _action_save_file(self, *_):
+        self.file_manager.save_file()
+
+    def _action_save_file_as(self, *_):
+        self.file_manager.save_file_as()
+
+    def _action_close_file(self, *_):
+        self.file_manager.close_file()
+
+    def _action_find(self, *_):
+        self.search_bar.show_search()
+
+    def _action_find_replace(self, *_):
+        self.search_bar.show_replace()
+
+    def _action_find_in_dir(self, *_):
+        self.search_bar.show_dir_search()
+
+    def _action_toggle_split(self, *_):
+        current = self.split_view.get_mode()
+        if current == "split":
+            self.split_view.set_mode("editor")
+            self._btn_editor_only.set_active(True)
+        else:
+            self.split_view.set_mode("split")
+            self._btn_split.set_active(True)
+
+    def _action_preview_only(self, *_):
+        self.split_view.set_mode("preview")
+        self._btn_preview_only.set_active(True)
+
+    def _action_toggle_sidebar(self, *_):
+        current = self._sidebar_revealer.get_reveal_child()
+        self._sidebar_revealer.set_reveal_child(not current)
+        self._btn_sidebar.set_active(not current)
+
+    def _action_fullscreen(self, *_):
+        if self.is_fullscreen():
+            self.unfullscreen()
+        else:
+            self.fullscreen()
+
+    def _action_zoom_in(self, *_):
+        self.editor.zoom_in()
+        self.preview.zoom_in()
+
+    def _action_zoom_out(self, *_):
+        self.editor.zoom_out()
+        self.preview.zoom_out()
+
+    def _action_zoom_reset(self, *_):
+        self.editor.zoom_reset()
+        self.preview.zoom_reset()
+
+    def _action_goto_line(self, *_):
+        self._show_goto_line_dialog()
+
+    def _action_preferences(self, *_):
+        from .preferences import PreferencesWindow
+        prefs = PreferencesWindow(transient_for=self, editor=self.editor)
+        prefs.present()
+
+    def _action_show_shortcuts(self, *_):
+        from .shortcuts import ShortcutsWindow
+        shortcuts = ShortcutsWindow(transient_for=self)
+        shortcuts.present()
+
+    def _show_goto_line_dialog(self):
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Go to Line",
+        )
+        entry = Gtk.Entry(placeholder_text="Line number")
+        entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Go")
+        dialog.set_default_response("go")
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(d, response):
+            if response == "go":
+                try:
+                    line = int(entry.get_text()) - 1
+                    self.editor.goto_line(max(0, line))
+                except ValueError:
+                    pass
+
+        dialog.connect("response", on_response)
+        entry.connect("activate", lambda _: dialog.response("go"))
+        dialog.present()
+
+    # ── Public API ─────────────────────────────────────────────────────────
+
+    def open_file(self, path: str):
+        self.file_manager.open_file(path)
