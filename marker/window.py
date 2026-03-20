@@ -269,16 +269,18 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.file_manager.open_file(path)
 
     def _on_sidebar_paned_moved(self, paned, param):
-        pos = paned.get_position()
-        if pos > 40:  # only save when actually visible
-            self._sidebar_width = pos
+        if self.file_explorer.get_visible():
+            pos = paned.get_position()
+            if pos > 40:
+                self._sidebar_width = pos
 
     def _on_sidebar_toggled(self, btn):
         if btn.get_active():
+            self.file_explorer.set_visible(True)
             self._content_paned.set_position(self._sidebar_width)
         else:
             self._sidebar_width = max(self._content_paned.get_position(), 240)
-            self._content_paned.set_position(0)
+            self.file_explorer.set_visible(False)
 
     # ── Action Callbacks ───────────────────────────────────────────────────
 

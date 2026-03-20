@@ -49,13 +49,14 @@ class MarkerApplication(Adw.Application):
         return window
 
     def _on_about(self, action, param):
-        about = Adw.AboutWindow(
+        about = Gtk.AboutDialog(
             transient_for=self.get_active_window(),
-            application_name="Marker",
-            application_icon="text-editor",
-            developer_name="Daniel",
+            modal=True,
+            program_name="Marker",
+            logo_icon_name="marker",
             version=__version__,
             comments="Markdown and TXT viewer/editor for Linux",
             license_type=Gtk.License.GPL_3_0,
+            authors=["Daniel"],
         )
         about.present()

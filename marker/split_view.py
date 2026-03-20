@@ -31,8 +31,21 @@ class SplitView(Gtk.Paned):
         self.set_shrink_start_child(False)
         self.set_shrink_end_child(False)
 
+        # Set initial split position once the widget is allocated
+        self.connect("realize", self._on_realize)
+
         # Connect to editor changes for preview updates
         editor.connect("content-changed", self._on_content_changed)
+
+    def _on_realize(self, widget):
+        # Set 50/50 split after the widget knows its actual width
+        def _set_initial_position():
+            w = self.get_allocated_width()
+            if w > 0:
+                self.set_position(w // 2)
+            return False  # don't repeat
+        from gi.repository import GLib
+        GLib.idle_add(_set_initial_position)
 
     def _on_content_changed(self, editor, text):
         if self._mode in ("split", "preview"):
