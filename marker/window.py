@@ -10,7 +10,7 @@ from gi.repository import Gtk, Adw, Gio, GLib
 from .tab_view import TabManager
 from .file_explorer import FileExplorer
 from .search import SearchBar
-from .recents import RecentFilesManager, MENU_LIMIT
+from .recents import RecentFilesManager, MENU_LIMIT, format_relative_time
 from .recents_section import RecentsSection
 from .format_toolbar import FormatToolbar
 from .menubar import build_menubar
@@ -33,11 +33,14 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._minimap = Minimap()
         self._syncing_split = False
         self._tab_signal_ids = []
+        self._last_save_time: float | None = None
 
         self._build_ui()
         self._setup_actions()
         self._setup_shortcuts()
         self._connect_signals()
+
+        GLib.timeout_add_seconds(30, self._tick_save_time)
 
     # ── Tab-delegated properties ───────────────────────────────────────────
 
@@ -243,21 +246,29 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._status_pos = Gtk.Label(label="Ln 1, Col 1", xalign=0)
         self._status_pos.add_css_class("dim-label")
         bar.append(self._status_pos)
+        bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
 
-        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        bar.append(sep)
-
-        self._status_words = Gtk.Label(label="0 words", xalign=0)
+        self._status_words = Gtk.Label(label="0 words · < 1 min read", xalign=0)
         self._status_words.add_css_class("dim-label")
         bar.append(self._status_words)
+        bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        self._status_syntax = Gtk.Label(label="Plain Text", xalign=0)
+        self._status_syntax.add_css_class("dim-label")
+        bar.append(self._status_syntax)
 
         spacer = Gtk.Label()
         spacer.set_hexpand(True)
         bar.append(spacer)
 
-        self._status_encoding = Gtk.Label(label="UTF-8", xalign=1)
+        self._status_encoding = Gtk.Label(label="UTF-8 · LF", xalign=1)
         self._status_encoding.add_css_class("dim-label")
         bar.append(self._status_encoding)
+        bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        self._status_save = Gtk.Label(label="", xalign=1)
+        self._status_save.add_css_class("dim-label")
+        bar.append(self._status_save)
 
         return bar
 
@@ -435,7 +446,12 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _on_content_changed(self, editor, text):
         words = len(text.split()) if text.strip() else 0
-        self._status_words.set_text(f"{words} words")
+        if words >= 110:
+            mins = max(1, round(words / 220))
+            time_str = f"· {mins} min read"
+        else:
+            time_str = "· < 1 min read"
+        self._status_words.set_text(f"{words} words {time_str}")
 
     def _on_file_changed(self, fm, path, is_modified):
         if path:
@@ -446,6 +462,32 @@ class MarkerWindow(Adw.ApplicationWindow):
         else:
             self._title_widget.set_title("Marker")
             self._title_widget.set_subtitle("")
+
+        # Syntax label
+        if path:
+            ext = os.path.splitext(path)[1].lower()
+            self._status_syntax.set_text(
+                "Markdown" if ext in {".md", ".markdown", ".mkd", ".mdown"} else "Plain Text"
+            )
+        else:
+            self._status_syntax.set_text("Plain Text")
+
+        # Save status
+        import time as _time
+        if is_modified:
+            self._status_save.set_text("Modified")
+            self._last_save_time = None
+        elif path:
+            self._last_save_time = _time.time()
+            self._status_save.set_text("Saved just now")
+        else:
+            self._status_save.set_text("")
+            self._last_save_time = None
+
+    def _tick_save_time(self):
+        if self._last_save_time is not None:
+            self._status_save.set_text(f"Saved {format_relative_time(self._last_save_time)}")
+        return True  # keep ticking
 
     def _on_explorer_file_activated(self, explorer, path):
         self.file_manager.open_file(path)
