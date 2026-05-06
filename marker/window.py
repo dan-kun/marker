@@ -7,10 +7,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Gtk, Adw, Gio, GLib
-from .editor import MarkdownEditor
-from .preview import MarkdownPreview
-from .split_view import SplitView
-from .file_manager import FileManager
+from .tab_view import TabManager
 from .file_explorer import FileExplorer
 from .search import SearchBar
 from .recents import RecentFilesManager, MENU_LIMIT
@@ -26,17 +23,36 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.set_default_size(1200, 800)
 
         # Core components
-        self.editor = MarkdownEditor()
-        self.preview = MarkdownPreview()
         self.recents_manager = RecentFilesManager()
-        self.file_manager = FileManager(self, self.recents_manager)
+        self.tab_manager = TabManager(self, self.recents_manager)
         self.search_bar = SearchBar(self.editor)
         self.file_explorer = FileExplorer()
+
+        self._syncing_split = False
+        self._tab_signal_ids = []
 
         self._build_ui()
         self._setup_actions()
         self._setup_shortcuts()
         self._connect_signals()
+
+    # ── Tab-delegated properties ───────────────────────────────────────────
+
+    @property
+    def editor(self):
+        return self.tab_manager.active_editor
+
+    @property
+    def preview(self):
+        return self.tab_manager.active_preview
+
+    @property
+    def split_view(self):
+        return self.tab_manager.active_split_view
+
+    @property
+    def file_manager(self):
+        return self.tab_manager.active_file_manager
 
     # ── UI Construction ────────────────────────────────────────────────────
 
@@ -78,14 +94,11 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         self._content_paned.set_start_child(self._sidebar_box)
 
-        # Split view (editor + preview)
-        self.split_view = SplitView(self.editor, self.preview)
-        self.split_view.set_hexpand(True)
-
+        # Editor area: search bar + tab manager
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_box.set_hexpand(True)
         editor_box.append(self.search_bar)
-        editor_box.append(self.split_view)
+        editor_box.append(self.tab_manager)
 
         self._content_paned.set_end_child(editor_box)
         root_box.append(self._content_paned)
@@ -148,9 +161,24 @@ class MarkerWindow(Adw.ApplicationWindow):
         )
 
         self._btn_split.set_active(True)
-        self._btn_editor_only.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("editor"))
-        self._btn_split.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("split"))
-        self._btn_preview_only.connect("toggled", lambda b: b.get_active() and self.split_view.set_mode("preview"))
+        self._btn_editor_only.connect(
+            "toggled",
+            lambda b: not getattr(self, "_syncing_split", False)
+            and b.get_active()
+            and self.split_view.set_mode("editor"),
+        )
+        self._btn_split.connect(
+            "toggled",
+            lambda b: not getattr(self, "_syncing_split", False)
+            and b.get_active()
+            and self.split_view.set_mode("split"),
+        )
+        self._btn_preview_only.connect(
+            "toggled",
+            lambda b: not getattr(self, "_syncing_split", False)
+            and b.get_active()
+            and self.split_view.set_mode("preview"),
+        )
 
         view_box.append(self._btn_editor_only)
         view_box.append(self._btn_split)
@@ -225,6 +253,9 @@ class MarkerWindow(Adw.ApplicationWindow):
             ("save-file", self._action_save_file),
             ("save-file-as", self._action_save_file_as),
             ("close-file", self._action_close_file),
+            ("new-tab", self._action_new_tab),
+            ("next-tab", self._action_next_tab),
+            ("prev-tab", self._action_prev_tab),
             ("find", self._action_find),
             ("find-replace", self._action_find_replace),
             ("find-in-dir", self._action_find_in_dir),
@@ -252,6 +283,10 @@ class MarkerWindow(Adw.ApplicationWindow):
         clear_recents.connect("activate", lambda *_: self.recents_manager.clear())
         self.add_action(clear_recents)
 
+        goto_tab = Gio.SimpleAction.new("goto-tab", GLib.VariantType.new("i"))
+        goto_tab.connect("activate", lambda a, p: self.tab_manager.goto_tab(p.get_int32() - 1))
+        self.add_action(goto_tab)
+
         format_actions = [
             ("format-bold",          lambda *_: self.editor.insert_bold()),
             ("format-italic",        lambda *_: self.editor.insert_italic()),
@@ -277,6 +312,9 @@ class MarkerWindow(Adw.ApplicationWindow):
             "win.save-file": ["<Ctrl>s"],
             "win.save-file-as": ["<Ctrl><Shift>s"],
             "win.close-file": ["<Ctrl>w"],
+            "win.new-tab": ["<Ctrl>t"],
+            "win.next-tab": ["<Ctrl>Tab"],
+            "win.prev-tab": ["<Ctrl><Shift>Tab"],
             "win.find": ["<Ctrl>f"],
             "win.find-replace": ["<Ctrl>h"],
             "win.find-in-dir": ["<Ctrl><Shift>f"],
@@ -297,16 +335,64 @@ class MarkerWindow(Adw.ApplicationWindow):
         for action, accels in accel_map.items():
             app.set_accels_for_action(action, accels)
 
+        # goto-tab(1) … goto-tab(9) with Ctrl+1 … Ctrl+9
+        for i in range(1, 10):
+            app.set_accels_for_action(
+                f"win.goto-tab({i})", [f"<Ctrl>{i}"]
+            )
+
     # ── Signals ────────────────────────────────────────────────────────────
 
     def _connect_signals(self):
-        self.editor.connect("cursor-moved", self._on_cursor_moved)
-        self.editor.connect("content-changed", self._on_content_changed)
-        self.file_manager.connect("file-changed", self._on_file_changed)
+        self._tab_signal_ids = []
+        self.tab_manager.connect("active-tab-changed", self._on_active_tab_changed)
         self.file_explorer.connect("file-activated", self._on_explorer_file_activated)
         self._recents_section.connect("file-activated", self._on_explorer_file_activated)
         self.recents_manager.connect("changed", self._rebuild_recents_menu)
         self._rebuild_recents_menu()
+        self._connect_active_tab()
+
+    def _on_active_tab_changed(self, *_):
+        self._connect_active_tab()
+
+    def _connect_active_tab(self):
+        # Disconnect previous tab's signals
+        for obj, hid in self._tab_signal_ids:
+            obj.disconnect(hid)
+        self._tab_signal_ids = []
+
+        ed = self.editor
+        fm = self.file_manager
+        if ed is None:
+            return
+
+        self._tab_signal_ids = [
+            (ed, ed.connect("cursor-moved", self._on_cursor_moved)),
+            (ed, ed.connect("content-changed", self._on_content_changed)),
+            (fm, fm.connect("file-changed", self._on_file_changed)),
+        ]
+
+        # Sync UI from new active tab's state
+        self._sync_split_buttons()
+        self.search_bar.set_editor(ed)
+
+        # Trigger immediate status bar update
+        buf = ed.get_buffer()
+        it = buf.get_iter_at_mark(buf.get_insert())
+        self._on_cursor_moved(ed, it.get_line() + 1, it.get_line_offset() + 1)
+        self._on_content_changed(ed, ed.get_text())
+        self._on_file_changed(fm, fm.current_path or "", fm.is_modified)
+
+    def _sync_split_buttons(self):
+        sv = self.split_view
+        if sv is None:
+            return
+        mode = sv.get_mode()
+        self._syncing_split = True
+        self._btn_editor_only.set_active(mode == "editor")
+        self._btn_split.set_active(mode == "split")
+        self._btn_preview_only.set_active(mode == "preview")
+        self._syncing_split = False
 
     def _on_cursor_moved(self, editor, line, col):
         self._status_pos.set_text(f"Ln {line}, Col {col}")
@@ -357,7 +443,16 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.file_manager.save_file_as()
 
     def _action_close_file(self, *_):
-        self.file_manager.close_file()
+        self.tab_manager.close_active_tab()
+
+    def _action_new_tab(self, *_):
+        self.tab_manager.new_tab()
+
+    def _action_next_tab(self, *_):
+        self.tab_manager.next_tab()
+
+    def _action_prev_tab(self, *_):
+        self.tab_manager.prev_tab()
 
     def _action_find(self, *_):
         self.search_bar.show_search()

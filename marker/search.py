@@ -149,6 +149,16 @@ class SearchBar(Gtk.Box):
 
     # ── Public API ─────────────────────────────────────────────────────────
 
+    def set_editor(self, editor):
+        """Reconnect the search bar to a new editor (called on tab switch)."""
+        self._editor = editor
+        self._buffer = editor.get_buffer()
+        self._search_ctx = GtkSource.SearchContext(
+            buffer=self._buffer,
+            settings=self._search_settings,
+        )
+        self._search_ctx.set_highlight(True)
+
     def show_search(self):
         self._mode = "search"
         self._inline_bar.set_visible(True)

@@ -22,10 +22,10 @@ class FileManager(GObject.Object):
         "file-changed": (GObject.SignalFlags.RUN_LAST, None, (str, bool)),
     }
 
-    def __init__(self, window, recents_manager=None):
+    def __init__(self, window, editor, recents_manager=None):
         super().__init__()
         self._window = window
-        self._editor = window.editor
+        self._editor = editor
         self._recents = recents_manager
         self._current_path: str | None = None
         self._is_modified = False
