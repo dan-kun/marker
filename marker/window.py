@@ -13,6 +13,7 @@ from .search import SearchBar
 from .recents import RecentFilesManager, MENU_LIMIT
 from .recents_section import RecentsSection
 from .format_toolbar import FormatToolbar
+from .menubar import build_menubar
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -63,6 +64,11 @@ class MarkerWindow(Adw.ApplicationWindow):
         # Header bar
         self._header = self._build_header()
         root_box.append(self._header)
+
+        # Classic menubar
+        self._menubar = build_menubar()
+        self._menubar_recents_menu = self._menubar._recents_menu
+        root_box.append(self._menubar)
 
         # Format toolbar
         self._format_toolbar = FormatToolbar()
@@ -286,6 +292,16 @@ class MarkerWindow(Adw.ApplicationWindow):
         goto_tab = Gio.SimpleAction.new("goto-tab", GLib.VariantType.new("i"))
         goto_tab.connect("activate", lambda a, p: self.tab_manager.goto_tab(p.get_int32() - 1))
         self.add_action(goto_tab)
+
+        editor_only_action = Gio.SimpleAction.new("editor-only", None)
+        editor_only_action.connect(
+            "activate",
+            lambda *_: (
+                self.split_view.set_mode("editor"),
+                self._btn_editor_only.set_active(True),
+            ),
+        )
+        self.add_action(editor_only_action)
 
         format_actions = [
             ("format-bold",          lambda *_: self.editor.insert_bold()),
@@ -517,16 +533,18 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.file_manager.open_file(path)
 
     def _rebuild_recents_menu(self, *_):
-        self._recents_menu.remove_all()
         recents = self.recents_manager.get_recents(limit=MENU_LIMIT)
-        for entry in recents:
-            item = Gio.MenuItem.new(os.path.basename(entry["path"]), None)
-            item.set_action_and_target_value(
-                "win.open-recent", GLib.Variant("s", entry["path"])
-            )
-            self._recents_menu.append_item(item)
-        if recents:
-            self._recents_menu.append("Clear Recents", "win.clear-recents")
+
+        for menu in (self._recents_menu, self._menubar_recents_menu):
+            menu.remove_all()
+            for entry in recents:
+                item = Gio.MenuItem.new(os.path.basename(entry["path"]), None)
+                item.set_action_and_target_value(
+                    "win.open-recent", GLib.Variant("s", entry["path"])
+                )
+                menu.append_item(item)
+            if recents:
+                menu.append("Clear Recents", "win.clear-recents")
 
     def _show_goto_line_dialog(self):
         dialog = Adw.MessageDialog(
