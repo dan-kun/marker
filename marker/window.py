@@ -14,6 +14,7 @@ from .recents import RecentFilesManager, MENU_LIMIT
 from .recents_section import RecentsSection
 from .format_toolbar import FormatToolbar
 from .menubar import build_menubar
+from .minimap import Minimap
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -29,6 +30,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.search_bar = SearchBar(self.editor)
         self.file_explorer = FileExplorer()
 
+        self._minimap = Minimap()
         self._syncing_split = False
         self._tab_signal_ids = []
 
@@ -107,7 +109,16 @@ class MarkerWindow(Adw.ApplicationWindow):
         editor_box.append(self.tab_manager)
 
         self._content_paned.set_end_child(editor_box)
-        root_box.append(self._content_paned)
+
+        # Outer horizontal box: content paned + minimap
+        outer_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        outer_hbox.set_vexpand(True)
+        self._content_paned.set_vexpand(True)
+        self._content_paned.set_hexpand(True)
+        outer_hbox.append(self._content_paned)
+        outer_hbox.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        outer_hbox.append(self._minimap)
+        root_box.append(outer_hbox)
 
         # Status bar
         self._statusbar = self._build_statusbar()
@@ -293,6 +304,13 @@ class MarkerWindow(Adw.ApplicationWindow):
         goto_tab.connect("activate", lambda a, p: self.tab_manager.goto_tab(p.get_int32() - 1))
         self.add_action(goto_tab)
 
+        toggle_minimap_action = Gio.SimpleAction.new("toggle-minimap", None)
+        toggle_minimap_action.connect(
+            "activate",
+            lambda *_: self._minimap.set_visible(not self._minimap.get_visible()),
+        )
+        self.add_action(toggle_minimap_action)
+
         editor_only_action = Gio.SimpleAction.new("editor-only", None)
         editor_only_action.connect(
             "activate",
@@ -347,6 +365,7 @@ class MarkerWindow(Adw.ApplicationWindow):
             "win.format-italic": ["<Ctrl>i"],
             "win.format-code": ["<Ctrl>grave"],
             "win.format-link": ["<Ctrl>l"],
+            "win.toggle-minimap": ["<Ctrl>m"],
         }
         for action, accels in accel_map.items():
             app.set_accels_for_action(action, accels)
@@ -391,6 +410,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         # Sync UI from new active tab's state
         self._sync_split_buttons()
         self.search_bar.set_editor(ed)
+        self._minimap.set_editor(ed)
 
         # Trigger immediate status bar update
         buf = ed.get_buffer()
