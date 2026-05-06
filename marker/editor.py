@@ -142,10 +142,15 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._update_font()
 
     def goto_line(self, line: int):
-        it = self._buffer.get_iter_at_line(line)
+        it = self._iter_at_line(line)
         self._buffer.place_cursor(it)
         self._view.scroll_to_iter(it, 0.0, True, 0.0, 0.3)
         self._view.grab_focus()
+
+    def _iter_at_line(self, line: int):
+        result = self._buffer.get_iter_at_line(line)
+        # PyGObject ≥ 3.44 returns (bool, GtkTextIter); older returns just GtkTextIter
+        return result[1] if isinstance(result, tuple) else result
 
     def undo(self):
         if self._buffer.can_undo():
@@ -163,3 +168,134 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def grab_focus(self):
         self._view.grab_focus()
+
+    # ── Markdown insert helpers ────────────────────────────────────────────
+
+    def insert_bold(self):
+        self._wrap_selection("**", "**")
+
+    def insert_italic(self):
+        self._wrap_selection("*", "*")
+
+    def insert_code(self):
+        buf = self._buffer
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            text = buf.get_text(start, end, True)
+            if "\n" in text:
+                buf.begin_user_action()
+                buf.delete(start, end)
+                it = buf.get_iter_at_mark(buf.get_insert())
+                buf.insert(it, f"```\n{text}\n```")
+                buf.end_user_action()
+                return
+        self._wrap_selection("`", "`")
+
+    def insert_heading(self, level: int):
+        prefix = "#" * level + " "
+        buf = self._buffer
+        it = buf.get_iter_at_mark(buf.get_insert())
+        line_num = it.get_line()
+        line_start = self._iter_at_line(line_num)
+        line_end = line_start.copy()
+        if not line_end.ends_line():
+            line_end.forward_to_line_end()
+        line_text = buf.get_text(line_start, line_end, True)
+
+        # Strip any existing heading prefix
+        stripped = line_text
+        while stripped.startswith("#"):
+            stripped = stripped[1:]
+        if stripped.startswith(" "):
+            stripped = stripped[1:]
+
+        new_text = stripped if line_text == f"{prefix}{stripped}" else f"{prefix}{stripped}"
+
+        buf.begin_user_action()
+        buf.delete(line_start, line_end)
+        if new_text:
+            buf.insert(line_start, new_text)
+        buf.end_user_action()
+
+    def insert_link(self):
+        buf = self._buffer
+        buf.begin_user_action()
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            text = buf.get_text(start, end, True)
+            buf.delete(start, end)
+            it = buf.get_iter_at_mark(buf.get_insert())
+            buf.insert(it, f"[{text}](url)")
+            # Select "url" so the user can type the URL immediately
+            it = buf.get_iter_at_mark(buf.get_insert())
+            url_end = it.copy()
+            url_end.backward_chars(1)   # before ')'
+            it.backward_chars(4)        # before 'url)'
+            buf.select_range(it, url_end)
+        else:
+            it = buf.get_iter_at_mark(buf.get_insert())
+            buf.insert(it, "[text](url)")
+            # Select "text" so the user can type the link text immediately
+            it = buf.get_iter_at_mark(buf.get_insert())
+            text_end = it.copy()
+            text_end.backward_chars(6)   # before ](url)
+            text_start = it.copy()
+            text_start.backward_chars(10)  # before 'text'
+            buf.select_range(text_start, text_end)
+        buf.end_user_action()
+
+    def insert_bullet_list(self):
+        self._prefix_lines("- ")
+
+    def insert_numbered_list(self):
+        self._prefix_lines_numbered()
+
+    def _wrap_selection(self, prefix: str, suffix: str):
+        buf = self._buffer
+        buf.begin_user_action()
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            text = buf.get_text(start, end, True)
+            buf.delete(start, end)
+            it = buf.get_iter_at_mark(buf.get_insert())
+            buf.insert(it, f"{prefix}{text}{suffix}")
+        else:
+            it = buf.get_iter_at_mark(buf.get_insert())
+            buf.insert(it, f"{prefix}{suffix}")
+            it = buf.get_iter_at_mark(buf.get_insert())
+            it.backward_chars(len(suffix))
+            buf.place_cursor(it)
+        buf.end_user_action()
+
+    def _prefix_lines(self, prefix: str):
+        buf = self._buffer
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            start_line = start.get_line()
+            end_line = end.get_line()
+            if end.get_line_offset() == 0 and end_line > start_line:
+                end_line -= 1
+        else:
+            start_line = end_line = buf.get_iter_at_mark(buf.get_insert()).get_line()
+
+        buf.begin_user_action()
+        for line in range(end_line, start_line - 1, -1):
+            buf.insert(self._iter_at_line(line), prefix)
+        buf.end_user_action()
+
+    def _prefix_lines_numbered(self):
+        buf = self._buffer
+        if buf.get_has_selection():
+            start, end = buf.get_selection_bounds()
+            start_line = start.get_line()
+            end_line = end.get_line()
+            if end.get_line_offset() == 0 and end_line > start_line:
+                end_line -= 1
+        else:
+            start_line = end_line = buf.get_iter_at_mark(buf.get_insert()).get_line()
+
+        count = end_line - start_line + 1
+        buf.begin_user_action()
+        for i, line in enumerate(range(end_line, start_line - 1, -1)):
+            buf.insert(self._iter_at_line(line), f"{count - i}. ")
+        buf.end_user_action()

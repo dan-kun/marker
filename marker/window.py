@@ -15,6 +15,7 @@ from .file_explorer import FileExplorer
 from .search import SearchBar
 from .recents import RecentFilesManager, MENU_LIMIT
 from .recents_section import RecentsSection
+from .format_toolbar import FormatToolbar
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -46,6 +47,11 @@ class MarkerWindow(Adw.ApplicationWindow):
         # Header bar
         self._header = self._build_header()
         root_box.append(self._header)
+
+        # Format toolbar
+        self._format_toolbar = FormatToolbar()
+        root_box.append(self._format_toolbar)
+        root_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # Content area: sidebar | main pane  (both resizable via Gtk.Paned)
         self._sidebar_width = 240  # last known width when visible
@@ -246,6 +252,23 @@ class MarkerWindow(Adw.ApplicationWindow):
         clear_recents.connect("activate", lambda *_: self.recents_manager.clear())
         self.add_action(clear_recents)
 
+        format_actions = [
+            ("format-bold",          lambda *_: self.editor.insert_bold()),
+            ("format-italic",        lambda *_: self.editor.insert_italic()),
+            ("format-code",          lambda *_: self.editor.insert_code()),
+            ("format-link",          lambda *_: self.editor.insert_link()),
+            ("format-bullet-list",   lambda *_: self.editor.insert_bullet_list()),
+            ("format-numbered-list", lambda *_: self.editor.insert_numbered_list()),
+        ]
+        for name, callback in format_actions:
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+
+        heading_action = Gio.SimpleAction.new("format-heading", GLib.VariantType.new("i"))
+        heading_action.connect("activate", lambda a, p: self.editor.insert_heading(p.get_int32()))
+        self.add_action(heading_action)
+
     def _setup_shortcuts(self):
         app = self.get_application()
         accel_map = {
@@ -266,6 +289,10 @@ class MarkerWindow(Adw.ApplicationWindow):
             "win.zoom-reset": ["<Ctrl>0"],
             "win.goto-line": ["<Ctrl>g"],
             "win.preferences": ["<Ctrl>comma"],
+            "win.format-bold": ["<Ctrl>b"],
+            "win.format-italic": ["<Ctrl>i"],
+            "win.format-code": ["<Ctrl>grave"],
+            "win.format-link": ["<Ctrl>l"],
         }
         for action, accels in accel_map.items():
             app.set_accels_for_action(action, accels)
