@@ -1,5 +1,6 @@
 """Main application window for Marker."""
 
+import os
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -12,6 +13,8 @@ from .split_view import SplitView
 from .file_manager import FileManager
 from .file_explorer import FileExplorer
 from .search import SearchBar
+from .recents import RecentFilesManager, MENU_LIMIT
+from .recents_section import RecentsSection
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -24,7 +27,8 @@ class MarkerWindow(Adw.ApplicationWindow):
         # Core components
         self.editor = MarkdownEditor()
         self.preview = MarkdownPreview()
-        self.file_manager = FileManager(self)
+        self.recents_manager = RecentFilesManager()
+        self.file_manager = FileManager(self, self.recents_manager)
         self.search_bar = SearchBar(self.editor)
         self.file_explorer = FileExplorer()
 
@@ -57,7 +61,16 @@ class MarkerWindow(Adw.ApplicationWindow):
         # Track manual resizes so toggle restores the right width
         self._content_paned.connect("notify::position", self._on_sidebar_paned_moved)
 
-        self._content_paned.set_start_child(self.file_explorer)
+        self._recents_section = RecentsSection(self.recents_manager)
+
+        self.file_explorer.set_vexpand(True)
+
+        self._sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._sidebar_box.set_size_request(220, -1)
+        self._sidebar_box.append(self._recents_section)
+        self._sidebar_box.append(self.file_explorer)
+
+        self._content_paned.set_start_child(self._sidebar_box)
 
         # Split view (editor + preview)
         self.split_view = SplitView(self.editor, self.preview)
@@ -143,10 +156,20 @@ class MarkerWindow(Adw.ApplicationWindow):
             icon_name="open-menu-symbolic",
             tooltip_text="Menu",
         )
+
+        self._recents_menu = Gio.Menu()
+        recents_submenu_section = Gio.Menu()
+        recents_submenu_section.append_submenu("Open Recent", self._recents_menu)
+
         menu = Gio.Menu()
-        menu.append("Preferences", "win.preferences")
-        menu.append("Keyboard shortcuts", "win.show-shortcuts")
-        menu.append("About Marker", "app.about")
+        menu.append_section(None, recents_submenu_section)
+
+        app_section = Gio.Menu()
+        app_section.append("Preferences", "win.preferences")
+        app_section.append("Keyboard shortcuts", "win.show-shortcuts")
+        app_section.append("About Marker", "app.about")
+        menu.append_section(None, app_section)
+
         menu_button.set_menu_model(menu)
         right_box.append(menu_button)
 
@@ -215,6 +238,14 @@ class MarkerWindow(Adw.ApplicationWindow):
             action.connect("activate", callback)
             self.add_action(action)
 
+        open_recent = Gio.SimpleAction.new("open-recent", GLib.VariantType.new("s"))
+        open_recent.connect("activate", self._action_open_recent)
+        self.add_action(open_recent)
+
+        clear_recents = Gio.SimpleAction.new("clear-recents", None)
+        clear_recents.connect("activate", lambda *_: self.recents_manager.clear())
+        self.add_action(clear_recents)
+
     def _setup_shortcuts(self):
         app = self.get_application()
         accel_map = {
@@ -246,6 +277,9 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.editor.connect("content-changed", self._on_content_changed)
         self.file_manager.connect("file-changed", self._on_file_changed)
         self.file_explorer.connect("file-activated", self._on_explorer_file_activated)
+        self._recents_section.connect("file-activated", self._on_explorer_file_activated)
+        self.recents_manager.connect("changed", self._rebuild_recents_menu)
+        self._rebuild_recents_menu()
 
     def _on_cursor_moved(self, editor, line, col):
         self._status_pos.set_text(f"Ln {line}, Col {col}")
@@ -256,7 +290,6 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _on_file_changed(self, fm, path, is_modified):
         if path:
-            import os
             name = os.path.basename(path)
             title = f"{'• ' if is_modified else ''}{name}"
             self._title_widget.set_title(title)
@@ -269,18 +302,18 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.file_manager.open_file(path)
 
     def _on_sidebar_paned_moved(self, paned, param):
-        if self.file_explorer.get_visible():
+        if self._sidebar_box.get_visible():
             pos = paned.get_position()
             if pos > 40:
                 self._sidebar_width = pos
 
     def _on_sidebar_toggled(self, btn):
         if btn.get_active():
-            self.file_explorer.set_visible(True)
+            self._sidebar_box.set_visible(True)
             self._content_paned.set_position(self._sidebar_width)
         else:
             self._sidebar_width = max(self._content_paned.get_position(), 240)
-            self.file_explorer.set_visible(False)
+            self._sidebar_box.set_visible(False)
 
     # ── Action Callbacks ───────────────────────────────────────────────────
 
@@ -356,6 +389,22 @@ class MarkerWindow(Adw.ApplicationWindow):
         from .shortcuts import ShortcutsWindow
         shortcuts = ShortcutsWindow(transient_for=self)
         shortcuts.present()
+
+    def _action_open_recent(self, action, param):
+        path = param.get_string()
+        self.file_manager.open_file(path)
+
+    def _rebuild_recents_menu(self, *_):
+        self._recents_menu.remove_all()
+        recents = self.recents_manager.get_recents(limit=MENU_LIMIT)
+        for entry in recents:
+            item = Gio.MenuItem.new(os.path.basename(entry["path"]), None)
+            item.set_action_and_target_value(
+                "win.open-recent", GLib.Variant("s", entry["path"])
+            )
+            self._recents_menu.append_item(item)
+        if recents:
+            self._recents_menu.append("Clear Recents", "win.clear-recents")
 
     def _show_goto_line_dialog(self):
         dialog = Adw.MessageDialog(

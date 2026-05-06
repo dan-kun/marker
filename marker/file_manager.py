@@ -22,10 +22,11 @@ class FileManager(GObject.Object):
         "file-changed": (GObject.SignalFlags.RUN_LAST, None, (str, bool)),
     }
 
-    def __init__(self, window):
+    def __init__(self, window, recents_manager=None):
         super().__init__()
         self._window = window
         self._editor = window.editor
+        self._recents = recents_manager
         self._current_path: str | None = None
         self._is_modified = False
 
@@ -88,6 +89,9 @@ class FileManager(GObject.Object):
         self._editor.set_text(text)
         self._set_path(path)
         self._editor.grab_focus()
+
+        if self._recents:
+            self._recents.push(path)
 
         # Tell explorer to highlight folder
         explorer = self._window.file_explorer
@@ -165,6 +169,8 @@ class FileManager(GObject.Object):
             self._show_error("Cannot save file", str(e))
             return
         self._set_path(path)
+        if self._recents:
+            self._recents.push(path)
 
     def close_file(self):
         self._with_discard_check(self._do_new_file)
