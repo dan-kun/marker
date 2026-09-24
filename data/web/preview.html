@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Rendered documents are untrusted: no network requests from scripts,
+       no plugins, and only local scripts/styles. Images may be remote. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; font-src file: data:; img-src file: data: http: https:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Preview</title>
 
   <!-- KaTeX -->
@@ -58,6 +62,7 @@
   <article id="content" class="markdown-body" style="display:none"></article>
 
   <!-- Vendor scripts (loaded after DOM) -->
+  <script src="js/purify.min.js"></script>
   <script src="js/markdown-it.min.js"></script>
   <script src="js/markdown-it-footnote.min.js"></script>
   <script src="js/katex.min.js"></script>
@@ -67,8 +72,14 @@
 
   <script>
     // ── Markdown-it setup ─────────────────────────────────────────────────
+    // Raw HTML in documents is only enabled when DOMPurify is available to
+    // strip scripts, event handlers and other active content from it.
+    const sanitize = window.DOMPurify
+      ? (html) => DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
+      : null;
+
     const md = window.markdownit({
-      html: true,
+      html: Boolean(sanitize),
       linkify: true,
       typographer: true,
       highlight: function(str, lang) {
@@ -88,49 +99,54 @@
     }
 
     // ── Mermaid setup ──────────────────────────────────────────────────────
-    if (window.mermaid) {
+    function initMermaid(isDark) {
+      if (!window.mermaid) return;
       mermaid.initialize({
         startOnLoad: false,
-        theme: 'default',
-        securityLevel: 'loose',
+        theme: isDark ? 'dark' : 'default',
+        securityLevel: 'strict',
       });
     }
+    initMermaid(false);
 
     // ── State ──────────────────────────────────────────────────────────────
-    let _isDark = false;
     let _mermaidCounter = 0;
+    let _renderGeneration = 0;
+    let _scrollPercent = null;
 
     // ── Theme ──────────────────────────────────────────────────────────────
     function setTheme(isDark) {
-      _isDark = isDark;
-      const body = document.body;
-      const hljsTheme = document.getElementById('hljs-theme');
-      const markerTheme = document.getElementById('marker-theme');
+      document.body.classList.toggle('dark', isDark);
+      document.body.classList.toggle('light', !isDark);
+      document.getElementById('hljs-theme').href =
+        isDark ? 'css-vendor/highlight-dark.min.css' : 'css-vendor/highlight-light.min.css';
+      document.getElementById('marker-theme').href =
+        isDark ? 'css/preview-dark.css' : 'css/preview-light.css';
+      initMermaid(isDark);
+    }
 
-      if (isDark) {
-        body.classList.remove('light');
-        body.classList.add('dark');
-        hljsTheme.href = 'css-vendor/highlight-dark.min.css';
-        markerTheme.href = 'css/preview-dark.css';
-      } else {
-        body.classList.remove('dark');
-        body.classList.add('light');
-        hljsTheme.href = 'css-vendor/highlight-light.min.css';
-        markerTheme.href = 'css/preview-light.css';
+    // ── Relative URLs ──────────────────────────────────────────────────────
+    // Images and links in a document are relative to the document's folder,
+    // not to this page.
+    function isRelative(url) {
+      return url && !url.startsWith('#') && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith('//');
+    }
+
+    function resolveRelativeUrls(root, baseUri) {
+      if (!baseUri) return;
+      for (const img of root.querySelectorAll('img[src]')) {
+        const src = img.getAttribute('src');
+        if (isRelative(src)) img.src = new URL(src, baseUri).href;
       }
-
-      // Re-initialize mermaid with correct theme
-      if (window.mermaid) {
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: isDark ? 'dark' : 'default',
-          securityLevel: 'loose',
-        });
+      for (const a of root.querySelectorAll('a[href]')) {
+        const href = a.getAttribute('href');
+        if (isRelative(href)) a.href = new URL(href, baseUri).href;
       }
     }
 
     // ── Render ─────────────────────────────────────────────────────────────
-    async function render(markdownText) {
+    async function render(markdownText, baseUri) {
+      const generation = ++_renderGeneration;
       const emptyState = document.getElementById('empty-state');
       const content = document.getElementById('content');
 
@@ -146,7 +162,7 @@
       // Convert mermaid code blocks to placeholders before MD parsing
       const mermaidBlocks = [];
       const processedText = markdownText.replace(
-        /```mermaid\n([\s\S]*?)```/g,
+        /```mermaid\r?\n([\s\S]*?)```/g,
         (match, code) => {
           const id = `mermaid-placeholder-${mermaidBlocks.length}`;
           mermaidBlocks.push({ id, code: code.trim() });
@@ -154,29 +170,35 @@
         }
       );
 
-      // Render markdown
-      let html = md.render(processedText);
-      content.innerHTML = html;
+      // Render into a detached element so a slow render never touches the
+      // DOM after a newer one has started.
+      const fragment = document.createElement('div');
+      const html = md.render(processedText);
+      fragment.innerHTML = sanitize ? sanitize(html) : html;
+      resolveRelativeUrls(fragment, baseUri);
 
-      // Re-render mermaid blocks
-      if (window.mermaid && mermaidBlocks.length > 0) {
+      if (window.mermaid) {
         for (const block of mermaidBlocks) {
-          const placeholder = content.querySelector(`[data-id="${block.id}"]`);
-          if (placeholder) {
-            const mermaidId = `mermaid-${++_mermaidCounter}`;
-            try {
-              const { svg } = await mermaid.render(mermaidId, block.code);
-              placeholder.outerHTML = `<div class="mermaid">${svg}</div>`;
-            } catch (e) {
-              placeholder.outerHTML = `<div class="mermaid-error"><pre>Mermaid error:\n${e.message}</pre></div>`;
-            }
+          const placeholder = fragment.querySelector(`[data-id="${block.id}"]`);
+          if (!placeholder) continue;
+          const wrapper = document.createElement('div');
+          try {
+            const { svg } = await mermaid.render(`mermaid-${++_mermaidCounter}`, block.code);
+            wrapper.className = 'mermaid';
+            wrapper.innerHTML = svg;
+          } catch (e) {
+            wrapper.className = 'mermaid-error';
+            const pre = document.createElement('pre');
+            pre.textContent = `Mermaid error:\n${e.message}`;
+            wrapper.appendChild(pre);
           }
+          if (generation !== _renderGeneration) return;  // superseded
+          placeholder.replaceWith(wrapper);
         }
       }
 
-      // Render KaTeX math
       if (window.renderMathInElement) {
-        renderMathInElement(content, {
+        renderMathInElement(fragment, {
           delimiters: [
             { left: '$$', right: '$$', display: true },
             { left: '$', right: '$', display: false },
@@ -186,6 +208,10 @@
           throwOnError: false,
         });
       }
+
+      if (generation !== _renderGeneration) return;
+      content.replaceChildren(...fragment.childNodes);
+      if (_scrollPercent !== null) setScrollPercent(_scrollPercent);
     }
 
     // ── Scroll position ────────────────────────────────────────────────────
@@ -196,6 +222,7 @@
     }
 
     function setScrollPercent(pct) {
+      _scrollPercent = pct;
       const el = document.documentElement;
       el.scrollTop = pct * (el.scrollHeight - el.clientHeight);
     }

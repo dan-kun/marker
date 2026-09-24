@@ -5,9 +5,10 @@ import os
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GObject, Pango
+from gi.repository import GLib, GObject, Gtk, Pango
 
-from .recents import RecentFilesManager, SIDEBAR_LIMIT, format_relative_time
+from .filetypes import icon_name
+from .recents import SIDEBAR_LIMIT, RecentFilesManager, format_relative_time
 
 
 class RecentsSection(Gtk.Box):
@@ -24,6 +25,8 @@ class RecentsSection(Gtk.Box):
         self._build_ui()
         self._manager.connect("changed", lambda _: self._refresh())
         self._refresh()
+        # Keep the "5m ago" labels current
+        GLib.timeout_add_seconds(60, self._update_times)
 
     def _build_ui(self):
         header = Gtk.Box(spacing=4)
@@ -82,7 +85,7 @@ class RecentsSection(Gtk.Box):
         box.set_margin_top(3)
         box.set_margin_bottom(3)
 
-        icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        icon = Gtk.Image.new_from_icon_name(icon_name(path))
         icon.set_pixel_size(16)
         box.append(icon)
 
@@ -95,9 +98,19 @@ class RecentsSection(Gtk.Box):
         time_label.add_css_class("caption")
         time_label.add_css_class("dim-label")
         box.append(time_label)
+        row.time_label = time_label  # type: ignore[attr-defined]
+        row.opened_at = opened_at  # type: ignore[attr-defined]
 
         row.set_child(box)
+        row.set_tooltip_text(path)
         return row
+
+    def _update_times(self):
+        index = 0
+        while (row := self._list_box.get_row_at_index(index)) is not None:
+            row.time_label.set_text(format_relative_time(row.opened_at))
+            index += 1
+        return GLib.SOURCE_CONTINUE
 
     def _on_row_activated(self, listbox, row):
         if row is not None:

@@ -3,7 +3,7 @@
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib
+from gi.repository import GLib, Gtk
 
 
 class FormatToolbar(Gtk.Box):
@@ -59,12 +59,10 @@ class FormatToolbar(Gtk.Box):
         label: str | None = None,
         target: GLib.Variant | None = None,
     ) -> Gtk.Button:
-        btn = Gtk.Button(
-            icon_name=icon if icon else None,
-            label=label if label else None,
-            tooltip_text=tip,
-        )
-        btn.set_action_name(action)
+        # Only pass the properties that are set: icon_name=None triggers
+        # a Gtk-CRITICAL in gtk_button_set_icon_name().
+        props = {"icon_name": icon} if icon else {"label": label}
+        btn = Gtk.Button(tooltip_text=tip, action_name=action, **props)
         if target is not None:
             btn.set_action_target_value(target)
         return btn

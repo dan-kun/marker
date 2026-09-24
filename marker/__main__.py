@@ -1,6 +1,7 @@
 """Entry point for Marker application."""
 
 import sys
+
 from .application import MarkerApplication
 
 

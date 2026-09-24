@@ -1,14 +1,14 @@
 """Marker GTK4 Application."""
 
-import sys
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gtk, Adw, Gio, GLib
-from .window import MarkerWindow
+from gi.repository import Adw, Gio, Gtk
+
 from . import __app_id__, __version__
+from .window import MarkerWindow
 
 
 class MarkerApplication(Adw.Application):
@@ -22,10 +22,11 @@ class MarkerApplication(Adw.Application):
         self._setup_actions()
 
     def _setup_actions(self):
+        # Closing each window runs its unsaved-changes check; the app exits
+        # when the last window is gone.
         quit_action = Gio.SimpleAction.new("quit", None)
-        quit_action.connect("activate", lambda *_: self.quit())
+        quit_action.connect("activate", self._on_quit)
         self.add_action(quit_action)
-        self.set_accels_for_action("app.quit", ["<Ctrl>q"])
 
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self._on_about)
@@ -35,11 +36,17 @@ class MarkerApplication(Adw.Application):
         window = self._get_or_create_window()
         window.present()
 
+    def _on_quit(self, action, param):
+        for window in list(self.get_windows()):
+            window.close()
+
     def _on_open(self, app, files, n_files, hint):
         window = self._get_or_create_window()
         window.present()
-        if files:
-            window.open_file(files[0].get_path())
+        for gfile in files:
+            path = gfile.get_path()  # None for non-local URIs
+            if path:
+                window.open_file(path)
 
     def _get_or_create_window(self):
         windows = self.get_windows()
