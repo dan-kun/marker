@@ -96,11 +96,15 @@ def test_relative_images_resolve_against_the_document(preview, tmp_path):
     assert src == (tmp_path / "pic.png").as_uri()
 
 
-def test_links_do_not_navigate_the_preview(preview):
+def test_links_do_not_navigate_the_preview(preview, monkeypatch):
+    launched = []
+    monkeypatch.setattr(preview, "_open_link", launched.append)  # don't start a browser
     uri = preview.get_webview().get_uri()
-    render(preview, "[out](https://example.com)")
+    render(preview, "[out](https://example.com/page)")
+    # Scripts run through the WebKit API count as user gestures
     js(preview, "document.querySelector('#content a').click(); return true")
-    wait_for(lambda: False, timeout=0.5)  # give a navigation time to start
+    assert wait_for(lambda: launched, timeout=5)
+    assert launched == ["https://example.com/page"]
     assert preview.get_webview().get_uri() == uri
 
 

@@ -146,3 +146,24 @@ def test_view_mode_buttons_follow_the_active_tab(window):
     tm.select(first)
     assert window.lookup_action("view-mode").get_state().get_string() == "preview"
     assert second.split_view.get_mode() == "split"
+
+
+def test_editor_scroll_is_mirrored_in_the_preview(window, monkeypatch):
+    tab = window.tab_manager.active_tab
+    fractions = []
+    monkeypatch.setattr(tab.preview, "scroll_to_fraction", fractions.append)
+    tab.editor.set_text("line\n" * 2000)
+    vadj = tab.editor.get_vadjustment()
+    assert wait_for(lambda: vadj.get_upper() > vadj.get_page_size() * 2)
+    vadj.set_value((vadj.get_upper() - vadj.get_page_size()) / 2)
+    assert wait_for(lambda: fractions)
+    assert abs(fractions[-1] - 0.5) < 0.05
+
+
+def test_minimap_viewport_matches_drawn_lines_for_short_documents(window):
+    minimap = window._minimap
+    window.editor.set_text("# Title\n" + "text\n" * 5)
+    assert wait_for(lambda: len(minimap._lines) == 7)
+    scale, content_h = minimap._layout(600)
+    assert scale == 1.0
+    assert content_h == minimap.HEADING_HEIGHT + 6 * minimap.LINE_HEIGHT  # not the widget height
