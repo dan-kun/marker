@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEB_DIR="$SCRIPT_DIR/../data/web"
+WEB_DIR="$SCRIPT_DIR/../marker/data/web"
 SUMS="$SCRIPT_DIR/vendor.sha256"
 
 KATEX="katex@0.16.11"

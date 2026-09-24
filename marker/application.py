@@ -32,6 +32,10 @@ class MarkerApplication(Adw.Application):
         about_action.connect("activate", self._on_about)
         self.add_action(about_action)
 
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        Gtk.Window.set_default_icon_name(__app_id__)
+
     def _on_activate(self, app):
         window = self._get_or_create_window()
         window.present()
@@ -48,19 +52,18 @@ class MarkerApplication(Adw.Application):
             if path:
                 window.open_file(path)
 
-    def _get_or_create_window(self):
-        windows = self.get_windows()
-        if windows:
-            return windows[0]
-        window = MarkerWindow(application=self)
-        return window
+    def _get_or_create_window(self) -> MarkerWindow:
+        for window in self.get_windows():
+            if isinstance(window, MarkerWindow):
+                return window
+        return MarkerWindow(application=self)
 
     def _on_about(self, action, param):
         about = Gtk.AboutDialog(
             transient_for=self.get_active_window(),
             modal=True,
             program_name="Marker",
-            logo_icon_name="marker",
+            logo_icon_name=__app_id__,
             version=__version__,
             comments="Markdown and TXT viewer/editor for Linux",
             license_type=Gtk.License.GPL_3_0,

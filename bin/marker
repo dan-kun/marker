@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
-cd /home/daniel/codigos_claude/marker
+# Run Marker from this checkout. Works when called through a symlink
+# (e.g. ~/.local/bin/marker) and keeps the caller's working directory,
+# so relative paths like `marker notes.md` resolve where you typed them.
+MARKER_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+export PYTHONPATH="$MARKER_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -m marker "$@"

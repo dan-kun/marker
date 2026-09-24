@@ -14,7 +14,7 @@ from gi.repository import Adw, Gdk, Gio, GObject, Gtk, WebKit
 
 from .filetypes import is_shown
 
-WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "web")
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "web")
 
 # Links with these schemes open in the user's default app; anything else
 # (javascript:, file: pointing at non-text files, custom handlers) is ignored.

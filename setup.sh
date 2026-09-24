@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Marker - Setup script
-# Installs system dependencies, downloads JS/CSS assets, and registers the app.
-# Compatible with: Ubuntu 20.04+, Linux Mint 20+, Debian 11+
+# Installs system dependencies, downloads the preview's JS/CSS assets, and
+# registers the app for the current user.
+#
+# Package installation uses apt (Debian, Ubuntu, Linux Mint and derivatives).
+# On other distributions install the equivalent packages yourself; the rest
+# of the script works everywhere. Requirements: Python 3.10+, GTK 4.6+,
+# libadwaita 1.1+, GtkSourceView 5 and WebKitGTK 6.0 (e.g. Ubuntu 24.04,
+# Debian 13, Fedora 39 or newer).
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -22,88 +28,72 @@ echo ""
 
 # ── 1. Check Python ────────────────────────────────────────────────────────
 info "Checking Python 3.10+..."
-if ! command -v python3 &>/dev/null; then
-    die "Python 3 not found. Install it with: sudo apt install python3"
-fi
-
-PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
-PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
-
-if [[ "$PYTHON_MAJOR" -lt 3 || ("$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -lt 10) ]]; then
-    die "Python 3.10+ required (found $PYTHON_VERSION). Upgrade Python or use a newer OS release."
-fi
-ok "Python $PYTHON_VERSION found"
+command -v python3 &>/dev/null || die "Python 3 not found. Install it with your package manager."
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' ||
+    die "Python 3.10+ required (found $(python3 -V 2>&1))."
+ok "$(python3 -V) found"
 
 # ── 2. Install system packages ────────────────────────────────────────────
-info "Installing system packages (requires sudo)..."
-
 PACKAGES=(
     python3-gi
     python3-gi-cairo
     gir1.2-gtk-4.0
-    gir1.2-adwaita-1
+    gir1.2-adw-1
     gir1.2-gtksource-5
     gir1.2-webkit-6.0
 )
 
-MISSING=()
-for pkg in "${PACKAGES[@]}"; do
-    if ! dpkg -s "$pkg" &>/dev/null 2>&1; then
-        MISSING+=("$pkg")
+if command -v dpkg &>/dev/null && command -v apt-get &>/dev/null; then
+    info "Checking system packages..."
+    MISSING=()
+    for pkg in "${PACKAGES[@]}"; do
+        dpkg -s "$pkg" &>/dev/null || MISSING+=("$pkg")
+    done
+    if [[ ${#MISSING[@]} -gt 0 ]]; then
+        echo "  Packages to install (requires sudo): ${MISSING[*]}"
+        sudo apt-get update -qq
+        sudo apt-get install -y "${MISSING[@]}" ||
+            die "Could not install ${MISSING[*]}. Your release may be too old for WebKitGTK 6.0."
+        ok "Packages installed"
+    else
+        ok "All system packages already installed"
     fi
-done
-
-if [[ ${#MISSING[@]} -gt 0 ]]; then
-    echo "  Packages to install: ${MISSING[*]}"
-    sudo apt-get update -qq
-    sudo apt-get install -y "${MISSING[@]}"
-    ok "Packages installed"
 else
-    ok "All system packages already installed"
+    warn "Not a Debian-based system: install GTK 4, libadwaita, GtkSourceView 5,"
+    warn "WebKitGTK 6.0 and PyGObject with your package manager."
 fi
 
-# ── 3. Verify GTK4 works ──────────────────────────────────────────────────
-info "Verifying GTK4 + GtkSource + WebKit..."
-python3 - <<'PYCHECK'
+# ── 3. Verify the GTK stack and minimum versions ──────────────────────────
+info "Verifying GTK4 + libadwaita + GtkSourceView + WebKit..."
+python3 - <<'PYCHECK' || die "The GTK stack is missing or too old (see above)."
+import sys
 import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-gi.require_version("GtkSource", "5")
-gi.require_version("WebKit", "6.0")
-from gi.repository import Gtk, Adw, GtkSource, WebKit
-print("  All Python bindings OK")
+try:
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    gi.require_version("GtkSource", "5")
+    gi.require_version("WebKit", "6.0")
+    from gi.repository import Adw, Gtk, GtkSource, WebKit  # noqa: F401
+except (ValueError, ImportError) as e:
+    print(f"  {e}")
+    sys.exit(1)
+gtk = (Gtk.get_major_version(), Gtk.get_minor_version())
+adw = (Adw.get_major_version(), Adw.get_minor_version())
+print(f"  GTK {gtk[0]}.{gtk[1]}, libadwaita {adw[0]}.{adw[1]}, "
+      f"WebKitGTK {WebKit.get_major_version()}.{WebKit.get_minor_version()}")
+if gtk < (4, 6) or adw < (1, 1):
+    print("  Marker needs GTK 4.6+ and libadwaita 1.1+")
+    sys.exit(1)
 PYCHECK
 ok "GTK4 bindings verified"
 
-# ── 4. Download JS/CSS vendor assets ──────────────────────────────────────
-JS_DIR="$SCRIPT_DIR/data/web/js"
-if [[ ! -f "$JS_DIR/markdown-it.min.js" ]]; then
-    info "Downloading JS/CSS vendor assets..."
-    bash "$SCRIPT_DIR/scripts/fetch-deps.sh"
-    ok "Vendor assets downloaded"
-else
-    ok "Vendor assets already present"
-fi
+# ── 4. Download and verify JS/CSS vendor assets ───────────────────────────
+info "Checking preview assets..."
+bash "$SCRIPT_DIR/scripts/fetch-deps.sh"
+ok "Vendor assets verified"
 
-# ── 5. Install desktop entry + icon ───────────────────────────────────────
+# ── 5. Install launcher, icon and desktop entry ───────────────────────────
 info "Installing desktop integration..."
-
-# Update Exec path to point to this installation
-DESKTOP_FILE="$SCRIPT_DIR/data/marker.desktop"
-LAUNCHER="$SCRIPT_DIR/bin/marker"
-
-# Rewrite launcher with correct path
-cat > "$LAUNCHER" <<LAUNCHER
-#!/usr/bin/env bash
-cd "$SCRIPT_DIR"
-exec python3 -m marker "\$@"
-LAUNCHER
-chmod +x "$LAUNCHER"
-
-# Rewrite .desktop Exec with correct path
-sed -i "s|Exec=.*|Exec=$LAUNCHER %F|" "$DESKTOP_FILE"
-
 bash "$SCRIPT_DIR/scripts/install-desktop.sh"
 ok "Desktop integration installed"
 
@@ -112,9 +102,9 @@ echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""
 echo "  Run Marker with:"
-echo "    python3 -m marker              # from this directory"
-echo "    python3 -m marker file.md      # open a file directly"
-echo "    $LAUNCHER"
+echo "    marker                  # from any directory (~/.local/bin/marker)"
+echo "    marker notes.md         # open files directly"
+echo "    $SCRIPT_DIR/bin/marker"
 echo ""
 echo "  Or find 'Marker' in your application menu."
 echo ""

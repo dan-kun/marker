@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# Creates a distributable zip of Marker (excludes git, pycache, vendor assets)
-set -e
+# Create a distributable zip of the committed sources (no vendor assets,
+# caches or local changes). The recipient runs setup.sh, which downloads
+# and verifies the vendor assets.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-VERSION=$(python3 -c "from marker import __version__; print(__version__)" 2>/dev/null || echo "0.1.0")
-OUTPUT="$PROJECT_DIR/../marker-$VERSION.zip"
+cd "$PROJECT_DIR"
 
-cd "$PROJECT_DIR/.."
+VERSION=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('marker/__init__.py').read())[1])")
+OUTPUT="$PROJECT_DIR/dist/marker-$VERSION.zip"
+mkdir -p "$PROJECT_DIR/dist"
 
-zip -r "$OUTPUT" marker/ \
-    --exclude "marker/.git/*" \
-    --exclude "marker/__pycache__/*" \
-    --exclude "marker/marker/__pycache__/*" \
-    --exclude "marker/data/web/js/*" \
-    --exclude "marker/data/web/css-vendor/*" \
-    --exclude "*.pyc" \
-    --exclude "*.egg-info/*"
+if ! git diff --quiet HEAD 2>/dev/null; then
+    echo "Note: uncommitted changes are not included in the package." >&2
+fi
+git archive --format=zip --prefix="marker-$VERSION/" -o "$OUTPUT" HEAD
 
 echo "Created: $OUTPUT"
 echo "Size: $(du -sh "$OUTPUT" | cut -f1)"
 echo ""
 echo "The recipient runs:"
 echo "  unzip marker-$VERSION.zip"
-echo "  cd marker"
+echo "  cd marker-$VERSION"
 echo "  bash setup.sh"
