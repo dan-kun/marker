@@ -1,44 +1,92 @@
-"""Keyboard shortcuts dialog."""
+"""Keyboard shortcuts: the single table behind the accelerators and the help window."""
+
+from dataclasses import dataclass
 
 import gi
 
 gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
 
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk
 
 
-_SHORTCUTS = [
+@dataclass(frozen=True)
+class Shortcut:
+    description: str
+    accels: tuple[str, ...]
+    action: str | None = None  # None: built into the editor, listed for reference
+    label: str | None = None   # custom text for the help window
+
+
+SHORTCUT_GROUPS: list[tuple[str, list[Shortcut]]] = [
     ("Files", [
-        ("Ctrl+N", "New file"),
-        ("Ctrl+O", "Open file"),
-        ("Ctrl+S", "Save"),
-        ("Ctrl+Shift+S", "Save as"),
-        ("Ctrl+W", "Close file"),
+        Shortcut("New document", ("<Ctrl>n",), "win.new-file"),
+        Shortcut("New tab", ("<Ctrl>t",), "win.new-tab"),
+        Shortcut("Open file", ("<Ctrl>o",), "win.open-file"),
+        Shortcut("Save", ("<Ctrl>s",), "win.save-file"),
+        Shortcut("Save as", ("<Ctrl><Shift>s",), "win.save-file-as"),
+        Shortcut("Close tab", ("<Ctrl>w",), "win.close-file"),
     ]),
-    ("View", [
-        ("Ctrl+E", "Toggle split view"),
-        ("Ctrl+Shift+P", "Preview only"),
-        ("Ctrl+\\", "Toggle sidebar"),
-        ("F11", "Fullscreen"),
-        ("Ctrl++  /  Ctrl+-", "Zoom in / out"),
-        ("Ctrl+0", "Reset zoom"),
+    ("Tabs", [
+        Shortcut("Next tab", ("<Ctrl>Tab",), "win.next-tab"),
+        Shortcut("Previous tab", ("<Ctrl><Shift>Tab",), "win.prev-tab"),
+        Shortcut("Go to tab 1…9", ("<Ctrl>1",), label="Ctrl+1 … Ctrl+9"),
     ]),
     ("Editing", [
-        ("Ctrl+Z", "Undo"),
-        ("Ctrl+Shift+Z", "Redo"),
-        ("Ctrl+G", "Go to line"),
+        Shortcut("Undo", ("<Ctrl>z",)),
+        Shortcut("Redo", ("<Ctrl><Shift>z",)),
+        Shortcut("Go to line", ("<Ctrl>g",), "win.goto-line"),
+    ]),
+    ("Formatting", [
+        Shortcut("Bold", ("<Ctrl>b",), "win.format-bold"),
+        Shortcut("Italic", ("<Ctrl>i",), "win.format-italic"),
+        Shortcut("Inline code / code block", ("<Ctrl>grave",), "win.format-code"),
+        Shortcut("Link", ("<Ctrl>l",), "win.format-link"),
     ]),
     ("Search", [
-        ("Ctrl+F", "Find in file"),
-        ("Ctrl+H", "Find and replace"),
-        ("Ctrl+Shift+F", "Search in directory"),
+        Shortcut("Find in file", ("<Ctrl>f",), "win.find"),
+        Shortcut("Find and replace", ("<Ctrl>h",), "win.find-replace"),
+        Shortcut("Find in folder", ("<Ctrl><Shift>f",), "win.find-in-dir"),
+        Shortcut("Next / previous match", ("Return",), label="Enter / Shift+Enter"),
+        Shortcut("Close search", ("Escape",)),
+    ]),
+    ("View", [
+        Shortcut("Toggle split view", ("<Ctrl>e",), "win.toggle-split"),
+        Shortcut("Preview only", ("<Ctrl><Shift>p",), "win.preview-only"),
+        Shortcut("Toggle sidebar", ("<Ctrl>backslash",), "win.show-sidebar"),
+        Shortcut("Toggle minimap", ("<Ctrl>m",), "win.show-minimap"),
+        Shortcut("Fullscreen", ("F11",), "win.fullscreen"),
+        Shortcut("Zoom in", ("<Ctrl>plus", "<Ctrl>equal"), "win.zoom-in"),
+        Shortcut("Zoom out", ("<Ctrl>minus",), "win.zoom-out"),
+        Shortcut("Reset zoom", ("<Ctrl>0",), "win.zoom-reset"),
     ]),
     ("Application", [
-        ("Ctrl+,", "Preferences"),
-        ("Ctrl+Q", "Quit"),
+        Shortcut("Preferences", ("<Ctrl>comma",), "win.preferences"),
+        Shortcut("Keyboard shortcuts", ("<Ctrl>question",), "win.show-shortcuts"),
+        Shortcut("Quit", ("<Ctrl>q",), "app.quit"),
     ]),
 ]
+
+
+def iter_accels():
+    """Yield (detailed action name, accels) for every bindable shortcut."""
+    for _, shortcuts in SHORTCUT_GROUPS:
+        for shortcut in shortcuts:
+            if shortcut.action is not None:
+                yield shortcut.action, list(shortcut.accels)
+    for i in range(1, 10):
+        yield f"win.goto-tab({i})", [f"<Ctrl>{i}"]
+
+
+def accel_label(shortcut: Shortcut) -> str:
+    if shortcut.label:
+        return shortcut.label
+    labels = []
+    for accel in shortcut.accels[:1]:
+        parsed = Gtk.accelerator_parse(accel)
+        # PyGObject returns (key, mods) or (ok, key, mods) depending on version
+        key, mods = parsed[-2], parsed[-1]
+        labels.append(Gtk.accelerator_get_label(key, mods))
+    return " / ".join(labels)
 
 
 class ShortcutsWindow(Gtk.Window):
@@ -47,7 +95,7 @@ class ShortcutsWindow(Gtk.Window):
             title="Keyboard Shortcuts",
             modal=True,
             default_width=460,
-            default_height=520,
+            default_height=560,
             resizable=True,
             **kwargs,
         )
@@ -63,7 +111,7 @@ class ShortcutsWindow(Gtk.Window):
         outer.set_margin_top(20)
         outer.set_margin_bottom(20)
 
-        for i, (group_title, shortcuts) in enumerate(_SHORTCUTS):
+        for i, (group_title, shortcuts) in enumerate(SHORTCUT_GROUPS):
             if i > 0:
                 sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
                 sep.set_margin_top(8)
@@ -75,20 +123,20 @@ class ShortcutsWindow(Gtk.Window):
             heading.set_margin_bottom(6)
             outer.append(heading)
 
-            for accel, desc in shortcuts:
-                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+            for shortcut in shortcuts:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
                 row.set_margin_top(2)
                 row.set_margin_bottom(2)
 
-                desc_label = Gtk.Label(label=desc, xalign=0)
+                desc_label = Gtk.Label(label=shortcut.description, xalign=0)
                 desc_label.set_hexpand(True)
                 row.append(desc_label)
 
-                accel_label = Gtk.Label(label=accel, xalign=1)
-                accel_label.add_css_class("monospace")
-                accel_label.add_css_class("dim-label")
-                accel_label.add_css_class("caption")
-                row.append(accel_label)
+                keys = Gtk.Label(label=accel_label(shortcut), xalign=1)
+                keys.add_css_class("monospace")
+                keys.add_css_class("dim-label")
+                keys.add_css_class("caption")
+                row.append(keys)
 
                 outer.append(row)
 

@@ -4,21 +4,46 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gtk, GObject
+from gi.repository import Gtk
+
+from .utils import Debouncer
+
+# Adwaita blue 3, readable on both light and dark backgrounds
+_ACCENT = (0.21, 0.52, 0.89)
+
+
+def outline(text: str) -> list[tuple[bool, float]]:
+    """Return (is_heading, relative_width) per line of text.
+
+    "#" lines inside fenced code blocks are not headings.
+    """
+    lines = text.split("\n")
+    max_len = max((len(line) for line in lines), default=0) or 1
+    result = []
+    in_fence = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            is_heading = False
+        else:
+            is_heading = not in_fence and stripped.startswith("#")
+        result.append((is_heading, len(line) / max_len))
+    return result
 
 
 class Minimap(Gtk.DrawingArea):
     """
     Scaled-down silhouette of the active editor's buffer.
-    - Headings (lines starting with #) → taller, darker bar
-    - Body lines → 2px mid-gray bar, width proportional to line length
+    - Headings → taller, stronger bar
+    - Body lines → thin bar, width proportional to line length
     - Viewport indicator → accent-colored translucent rectangle
     """
 
     WIDGET_WIDTH = 80
     LINE_HEIGHT = 3      # pixels per line in minimap
     HEADING_HEIGHT = 5   # pixels for heading lines
-    MAX_LINE_WIDTH = 70  # max bar width in pixels
+    TOP_MARGIN = 2
 
     def __init__(self):
         super().__init__()
@@ -26,15 +51,14 @@ class Minimap(Gtk.DrawingArea):
         self.set_vexpand(True)
         self.set_draw_func(self._on_draw)
 
-        self._lines: list = []             # list of (is_heading: bool, norm_width: float)
-        self._viewport_top: float = 0.0    # 0..1 fraction
-        self._viewport_height: float = 0.1  # 0..1 fraction
+        self._lines: list[tuple[bool, float]] = []
+        self._viewport_top = 0.0     # 0..1 fraction of the document
+        self._viewport_height = 1.0  # 0..1 fraction of the document
 
         self._editor = None
-        self._buffer_handler = 0
-        self._vadj_handler = 0
+        self._handlers: list = []  # (object, handler id) on the current editor
+        self._rebuild = Debouncer(150, self._rebuild_lines)
 
-        # Click/drag to scroll
         click = Gtk.GestureClick()
         click.connect("pressed", self._on_click)
         self.add_controller(click)
@@ -45,17 +69,10 @@ class Minimap(Gtk.DrawingArea):
 
     def set_editor(self, editor):
         """Connect minimap to a new editor (call when active tab changes)."""
-        # Disconnect from old editor
-        if self._editor is not None:
-            old_buf = self._editor.get_buffer()
-            if self._buffer_handler:
-                old_buf.disconnect(self._buffer_handler)
-                self._buffer_handler = 0
-            old_adj = self._editor.get_vadjustment()
-            if old_adj and self._vadj_handler:
-                old_adj.disconnect(self._vadj_handler)
-                self._vadj_handler = 0
-
+        for obj, handler in self._handlers:
+            obj.disconnect(handler)
+        self._handlers = []
+        self._rebuild.cancel()
         self._editor = editor
 
         if editor is None:
@@ -64,90 +81,71 @@ class Minimap(Gtk.DrawingArea):
             return
 
         buf = editor.get_buffer()
-        self._buffer_handler = buf.connect("changed", self._on_buffer_changed)
-
         vadj = editor.get_vadjustment()
-        if vadj:
-            self._vadj_handler = vadj.connect("value-changed", self._on_vadj_changed)
-            self._on_vadj_changed(vadj)
-
+        self._handlers = [
+            (buf, buf.connect("changed", lambda *_: self._rebuild.trigger())),
+            (vadj, vadj.connect("value-changed", self._on_vadj_changed)),
+            (vadj, vadj.connect("notify::upper", self._on_vadj_changed)),
+            (vadj, vadj.connect("notify::page-size", self._on_vadj_changed)),
+        ]
+        self._on_vadj_changed(vadj)
         self._rebuild_lines()
 
     def _rebuild_lines(self):
         if self._editor is None:
             return
-        buf = self._editor.get_buffer()
-        start = buf.get_start_iter()
-        end = buf.get_end_iter()
-        text = buf.get_text(start, end, True)
-        lines = text.split("\n")
-
-        max_len = max((len(line) for line in lines), default=1) or 1
-        self._lines = []
-        for line in lines:
-            is_heading = line.startswith("#")
-            width = min(len(line) / max_len, 1.0)
-            self._lines.append((is_heading, width))
-
+        self._lines = outline(self._editor.get_text())
         self.queue_draw()
 
-    def _on_buffer_changed(self, buf):
-        self._rebuild_lines()
-
-    def _on_vadj_changed(self, vadj):
-        lo = vadj.get_lower()
-        hi = vadj.get_upper()
-        page = vadj.get_page_size()
-        val = vadj.get_value()
+    def _on_vadj_changed(self, vadj, *_):
+        lo, hi = vadj.get_lower(), vadj.get_upper()
         total = hi - lo
         if total <= 0:
-            self._viewport_top = 0.0
-            self._viewport_height = 1.0
+            self._viewport_top, self._viewport_height = 0.0, 1.0
         else:
-            self._viewport_top = val / total
-            self._viewport_height = page / total
+            self._viewport_top = (vadj.get_value() - lo) / total
+            self._viewport_height = min(1.0, vadj.get_page_size() / total)
         self.queue_draw()
 
-    def _on_draw(self, area, cr, width, height):
-        # Background
-        style = self.get_style_context()
-        Gtk.render_background(style, cr, 0, 0, width, height)
+    def _layout(self, height: int) -> tuple[float, float]:
+        """(scale, content_height): lines shrink to fit when the document is
+        taller than the widget; short documents only use the top part."""
+        natural = sum(self.HEADING_HEIGHT if h else self.LINE_HEIGHT for h, _ in self._lines)
+        usable = max(1, height - self.TOP_MARGIN)
+        scale = usable / natural if natural > usable else 1.0
+        return scale, natural * scale
 
+    def _foreground(self):
+        if hasattr(self, "get_color"):  # GTK ≥ 4.10
+            color = self.get_color()
+        else:
+            color = self.get_style_context().get_color()
+        return color.red, color.green, color.blue
+
+    def _on_draw(self, area, cr, width, height):
         if not self._lines:
             return
+        r, g, b = self._foreground()
+        scale, content_h = self._layout(height)
 
-        total_h = sum(
-            self.HEADING_HEIGHT if is_h else self.LINE_HEIGHT
-            for is_h, _ in self._lines
-        )
-
-        # Scale factor: map total_h → widget height
-        scale = height / total_h if total_h > height else 1.0
-
-        # Draw lines
-        y = 2.0
-        for is_heading, norm_w in self._lines:
+        y = float(self.TOP_MARGIN)
+        for is_heading, rel_width in self._lines:
             lh = (self.HEADING_HEIGHT if is_heading else self.LINE_HEIGHT) * scale
-            bar_w = norm_w * (width - 8)
-
-            if is_heading:
-                cr.set_source_rgba(0.2, 0.2, 0.2, 0.9)
-            else:
-                cr.set_source_rgba(0.5, 0.5, 0.5, 0.6)
-
-            cr.rectangle(4, y, bar_w, max(lh - 0.5, 1.0))
-            cr.fill()
+            if rel_width > 0:
+                cr.set_source_rgba(r, g, b, 0.85 if is_heading else 0.35)
+                cr.rectangle(4, y, rel_width * (width - 8), max(lh - 0.5, 0.5))
+                cr.fill()
             y += lh
 
-        # Viewport indicator
-        vp_y = self._viewport_top * height
-        vp_h = self._viewport_height * height
-        cr.set_source_rgba(0.4, 0.6, 1.0, 0.2)
+        # Viewport indicator, mapped onto the drawn lines (not the widget)
+        vp_y = self.TOP_MARGIN + self._viewport_top * content_h
+        vp_h = max(4.0, self._viewport_height * content_h)
+        cr.set_source_rgba(*_ACCENT, 0.18)
         cr.rectangle(0, vp_y, width, vp_h)
         cr.fill()
-        cr.set_source_rgba(0.4, 0.6, 1.0, 0.6)
+        cr.set_source_rgba(*_ACCENT, 0.6)
         cr.set_line_width(1.0)
-        cr.rectangle(0.5, vp_y + 0.5, width - 1, vp_h - 1)
+        cr.rectangle(0.5, vp_y + 0.5, width - 1, max(vp_h - 1, 1))
         cr.stroke()
 
     def _on_click(self, gesture, n_press, x, y):
@@ -159,15 +157,13 @@ class Minimap(Gtk.DrawingArea):
             self._scroll_to_y(start_y + dy)
 
     def _scroll_to_y(self, y):
-        if self._editor is None:
+        if self._editor is None or not self._lines:
             return
-        h = self.get_allocated_height()
-        if h <= 0:
+        _, content_h = self._layout(self.get_height())
+        if content_h <= 0:
             return
-        frac = max(0.0, min(1.0, y / h))
+        frac = max(0.0, min(1.0, (y - self.TOP_MARGIN) / content_h))
         vadj = self._editor.get_vadjustment()
-        if vadj:
-            lo = vadj.get_lower()
-            hi = vadj.get_upper()
-            page = vadj.get_page_size()
-            vadj.set_value(lo + frac * (hi - lo - page))
+        lo, hi, page = vadj.get_lower(), vadj.get_upper(), vadj.get_page_size()
+        # Center the viewport on the clicked point
+        vadj.set_value(max(lo, min(hi - page, lo + frac * (hi - lo) - page / 2)))

@@ -1,85 +1,101 @@
 #!/usr/bin/env bash
-# Download JS/CSS vendor dependencies for Marker preview
-set -e
+# Download the pinned JS/CSS dependencies of the Markdown preview and verify
+# them against scripts/vendor.sha256. Safe to re-run: verified files are kept.
+#
+# Files come from cdn.jsdelivr.net; if that fails, from the npm registry
+# tarball of the same package version (jsDelivr serves npm files unchanged,
+# so both sources must match the same checksums).
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JS_DIR="$SCRIPT_DIR/../data/web/js"
-CSS_DIR="$SCRIPT_DIR/../data/web/css-vendor"
+WEB_DIR="$SCRIPT_DIR/../marker/data/web"
+SUMS="$SCRIPT_DIR/vendor.sha256"
 
-mkdir -p "$JS_DIR" "$CSS_DIR"
+KATEX="katex@0.16.11"
 
-echo "Downloading vendor dependencies..."
-
-# markdown-it (latest stable)
-echo "  -> markdown-it..."
-curl -fsSL "https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js" \
-    -o "$JS_DIR/markdown-it.min.js"
-
-# markdown-it-footnote
-echo "  -> markdown-it-footnote..."
-curl -fsSL "https://cdn.jsdelivr.net/npm/markdown-it-footnote@3/dist/markdown-it-footnote.min.js" \
-    -o "$JS_DIR/markdown-it-footnote.min.js"
-
-# KaTeX
-KATEX_VERSION="0.16.11"
-echo "  -> KaTeX $KATEX_VERSION..."
-curl -fsSL "https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.js" \
-    -o "$JS_DIR/katex.min.js"
-curl -fsSL "https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/contrib/auto-render.min.js" \
-    -o "$JS_DIR/auto-render.min.js"
-curl -fsSL "https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.css" \
-    -o "$CSS_DIR/katex.min.css"
-
-# KaTeX fonts
-echo "  -> KaTeX fonts..."
-mkdir -p "$CSS_DIR/fonts"
-FONTS=(
-    "KaTeX_AMS-Regular.woff2"
-    "KaTeX_Caligraphic-Bold.woff2"
-    "KaTeX_Caligraphic-Regular.woff2"
-    "KaTeX_Fraktur-Bold.woff2"
-    "KaTeX_Fraktur-Regular.woff2"
-    "KaTeX_Main-Bold.woff2"
-    "KaTeX_Main-BoldItalic.woff2"
-    "KaTeX_Main-Italic.woff2"
-    "KaTeX_Main-Regular.woff2"
-    "KaTeX_Math-BoldItalic.woff2"
-    "KaTeX_Math-Italic.woff2"
-    "KaTeX_SansSerif-Bold.woff2"
-    "KaTeX_SansSerif-Italic.woff2"
-    "KaTeX_SansSerif-Regular.woff2"
-    "KaTeX_Script-Regular.woff2"
-    "KaTeX_Size1-Regular.woff2"
-    "KaTeX_Size2-Regular.woff2"
-    "KaTeX_Size3-Regular.woff2"
-    "KaTeX_Size4-Regular.woff2"
-    "KaTeX_Typewriter-Regular.woff2"
+# destination (relative to WEB_DIR) | npm package@version | path inside the package
+FILES=(
+    "js/purify.min.js|dompurify@3.2.7|dist/purify.min.js"
+    "js/markdown-it.min.js|markdown-it@14.1.0|dist/markdown-it.min.js"
+    "js/markdown-it-footnote.min.js|markdown-it-footnote@3.0.3|dist/markdown-it-footnote.min.js"
+    "js/katex.min.js|$KATEX|dist/katex.min.js"
+    "js/auto-render.min.js|$KATEX|dist/contrib/auto-render.min.js"
+    "js/highlight.min.js|@highlightjs/cdn-assets@11.9.0|highlight.min.js"
+    "js/mermaid.min.js|mermaid@11.12.0|dist/mermaid.min.js"
+    "css-vendor/katex.min.css|$KATEX|dist/katex.min.css"
+    "css-vendor/highlight-light.min.css|@highlightjs/cdn-assets@11.9.0|styles/github.min.css"
+    "css-vendor/highlight-dark.min.css|@highlightjs/cdn-assets@11.9.0|styles/github-dark.min.css"
+    "css-vendor/github-markdown.css|github-markdown-css@5.9.0|github-markdown.css"
 )
-for font in "${FONTS[@]}"; do
-    curl -fsSL "https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/fonts/$font" \
-        -o "$CSS_DIR/fonts/$font" 2>/dev/null || true
+for font in AMS-Regular Caligraphic-Bold Caligraphic-Regular Fraktur-Bold Fraktur-Regular \
+            Main-Bold Main-BoldItalic Main-Italic Main-Regular Math-BoldItalic Math-Italic \
+            SansSerif-Bold SansSerif-Italic SansSerif-Regular Script-Regular \
+            Size1-Regular Size2-Regular Size3-Regular Size4-Regular Typewriter-Regular; do
+    FILES+=("css-vendor/fonts/KaTeX_$font.woff2|$KATEX|dist/fonts/KaTeX_$font.woff2")
 done
 
-# highlight.js
-echo "  -> highlight.js..."
-curl -fsSL "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" \
-    -o "$JS_DIR/highlight.min.js"
-curl -fsSL "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" \
-    -o "$CSS_DIR/highlight-light.min.css"
-curl -fsSL "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" \
-    -o "$CSS_DIR/highlight-dark.min.css"
+if [[ ! -f "$SUMS" ]]; then
+    echo "Missing checksum list: $SUMS" >&2
+    exit 1
+fi
 
-# Mermaid
-echo "  -> Mermaid..."
-curl -fsSL "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" \
-    -o "$JS_DIR/mermaid.min.js"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-# GitHub Markdown CSS
-echo "  -> GitHub Markdown CSS..."
-curl -fsSL "https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown.css" \
-    -o "$CSS_DIR/github-markdown.css"
+expected_sum() {
+    awk -v f="$1" '$2 == f { print $1 }' "$SUMS"
+}
 
-echo ""
-echo "Done! Vendor dependencies downloaded to:"
-echo "  JS:  $JS_DIR"
-echo "  CSS: $CSS_DIR"
+is_valid() {
+    local dest="$1" want
+    want="$(expected_sum "$dest")"
+    [[ -n "$want" && -f "$WEB_DIR/$dest" ]] &&
+        [[ "$(sha256sum "$WEB_DIR/$dest" | cut -d' ' -f1)" == "$want" ]]
+}
+
+# Extract an npm tarball once and print the directory holding its files.
+npm_package_dir() {
+    local spec="$1" name version dir
+    name="${spec%@*}"
+    version="${spec##*@}"
+    dir="$TMP_DIR/$(echo "$spec" | tr '/@' '__')"
+    if [[ ! -d "$dir" ]]; then
+        mkdir -p "$dir"
+        curl -fsSL "https://registry.npmjs.org/$name/-/${name##*/}-$version.tgz" |
+            tar xz -C "$dir"
+    fi
+    echo "$dir/package"
+}
+
+fetch() {
+    local dest="$1" spec="$2" path="$3" out="$WEB_DIR/$1"
+    mkdir -p "$(dirname "$out")"
+    if curl -fsSL --retry 2 "https://cdn.jsdelivr.net/npm/$spec/$path" -o "$out.part" 2>/dev/null; then
+        mv "$out.part" "$out"
+    else
+        rm -f "$out.part"
+        cp "$(npm_package_dir "$spec")/$path" "$out"
+    fi
+}
+
+echo "Fetching preview dependencies into $WEB_DIR"
+failed=0
+for entry in "${FILES[@]}"; do
+    IFS='|' read -r dest spec path <<<"$entry"
+    if is_valid "$dest"; then
+        continue
+    fi
+    echo "  -> $dest ($spec)"
+    fetch "$dest" "$spec" "$path" || true
+    if ! is_valid "$dest"; then
+        echo "     checksum mismatch or download failed: $dest" >&2
+        rm -f "$WEB_DIR/$dest"
+        failed=1
+    fi
+done
+
+if [[ $failed -ne 0 ]]; then
+    echo "Some dependencies could not be verified." >&2
+    exit 1
+fi
+echo "All ${#FILES[@]} files present and verified."

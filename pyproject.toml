@@ -1,18 +1,46 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "marker"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Markdown and TXT viewer/editor for Linux"
-requires-python = ">=3.10"
 readme = "README.md"
+requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
+# PyGObject, GTK 4, libadwaita, GtkSourceView 5 and WebKitGTK 6.0 come from
+# the system packages (see README); they are not installable from PyPI.
+dependencies = []
 
 [project.scripts]
 marker = "marker.__main__:main"
 
+[tool.setuptools.dynamic]
+version = { attr = "marker.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["marker*"]
+
+[tool.setuptools.package-data]
+# Run scripts/fetch-deps.sh before building so the vendor files are included.
+marker = [
+    "data/web/*.html",
+    "data/web/css/*.css",
+    "data/web/js/*.js",
+    "data/web/css-vendor/*.css",
+    "data/web/css-vendor/fonts/*.woff2",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "UP", "I"]
+# gi.require_version() must run before `from gi.repository import ...`
+ignore = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

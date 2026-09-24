@@ -1,11 +1,16 @@
 """GtkSourceView-based markdown editor."""
 
+import itertools
+import re
+
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GObject
+from gi.repository import Gdk, GObject, Gtk, GtkSource
+
+_editor_ids = itertools.count(1)
 
 
 class MarkdownEditor(Gtk.ScrolledWindow):
@@ -13,7 +18,8 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     __gsignals__ = {
         "cursor-moved": (GObject.SignalFlags.RUN_LAST, None, (int, int)),
-        "content-changed": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        # No payload: listeners call get_text() only when they need it.
+        "content-changed": (GObject.SignalFlags.RUN_LAST, None, ()),
     }
 
     def __init__(self):
@@ -24,6 +30,8 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._font_size = 13
         self._zoom_level = 1.0
         self._css_provider = Gtk.CssProvider()
+        self._css_name = f"marker-editor-{next(_editor_ids)}"
+        self._display = None
 
         self._setup_buffer()
         self._setup_view()
@@ -32,7 +40,6 @@ class MarkdownEditor(Gtk.ScrolledWindow):
     def _setup_buffer(self):
         lang_manager = GtkSource.LanguageManager.get_default()
         self._lang_md = lang_manager.get_language("markdown")
-        self._lang_text = None
 
         self._buffer = GtkSource.Buffer()
         self._buffer.set_language(self._lang_md)
@@ -54,6 +61,7 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def _setup_view(self):
         self._view = GtkSource.View.new_with_buffer(self._buffer)
+        self._view.set_name(self._css_name)
         self._view.set_show_line_numbers(True)
         self._view.set_auto_indent(True)
         self._view.set_indent_on_tab(True)
@@ -69,27 +77,37 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._view.set_right_margin(12)
         self._view.set_top_margin(8)
         self._view.set_bottom_margin(8)
+
+        # One provider per editor, registered once and scoped by widget name.
+        self._display = Gdk.Display.get_default()
+        if self._display is not None:
+            Gtk.StyleContext.add_provider_for_display(
+                self._display, self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
         self._update_font()
 
     def _update_font(self):
-        size = int(self._font_size * self._zoom_level)
-        css = f"textview {{ font-family: {self._font_family}; font-size: {size}pt; }}"
-        self._css_provider.load_from_data(css.encode())
-        self._view.get_style_context().add_provider(
-            self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        size = max(4, round(self._font_size * self._zoom_level))
+        family = re.sub(r'[\\"{};]', "", self._font_family).strip() or "Monospace"
+        css = f'textview#{self._css_name} {{ font-family: "{family}", monospace; font-size: {size}pt; }}'
+        if hasattr(self._css_provider, "load_from_string"):  # GTK ≥ 4.12
+            self._css_provider.load_from_string(css)
+        else:
+            self._css_provider.load_from_data(css.encode())
+
+    def dispose(self):
+        """Release resources that outlive the widget (called when its tab closes)."""
+        if self._display is not None:
+            Gtk.StyleContext.remove_provider_for_display(self._display, self._css_provider)
+            self._display = None
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
     def _on_buffer_changed(self, buf):
-        text = self.get_text()
-        self.emit("content-changed", text)
+        self.emit("content-changed")
 
     def _on_cursor_moved(self, buf, param):
-        mark = buf.get_insert()
-        it = buf.get_iter_at_mark(mark)
-        line = it.get_line() + 1
-        col = it.get_line_offset() + 1
+        line, col = self.get_cursor_position()
         self.emit("cursor-moved", line, col)
 
     # ── Public API ─────────────────────────────────────────────────────────
@@ -100,34 +118,36 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         return self._buffer.get_text(start, end, True)
 
     def set_text(self, text: str):
+        """Replace the whole document. Not undoable; cursor goes to the start."""
         self._buffer.begin_irreversible_action()
         self._buffer.set_text(text)
         self._buffer.end_irreversible_action()
+        self._buffer.place_cursor(self._buffer.get_start_iter())
+
+    def is_empty(self) -> bool:
+        return self._buffer.get_char_count() == 0
+
+    def get_cursor_position(self) -> tuple[int, int]:
+        """1-based (line, column) of the insertion cursor."""
+        it = self._buffer.get_iter_at_mark(self._buffer.get_insert())
+        return it.get_line() + 1, it.get_line_offset() + 1
 
     def set_language(self, lang_id: str | None):
         if lang_id:
             lang_manager = GtkSource.LanguageManager.get_default()
-            lang = lang_manager.get_language(lang_id)
-            self._buffer.set_language(lang)
+            self._buffer.set_language(lang_manager.get_language(lang_id))
         else:
             self._buffer.set_language(None)
 
-    def set_word_wrap(self, enabled: bool):
-        if enabled:
-            self._view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        else:
-            self._view.set_wrap_mode(Gtk.WrapMode.NONE)
-
-    def set_font(self, font_name: str, size: int):
-        self._font_family = font_name
-        self._font_size = size
+    def apply_settings(self, settings):
+        self._font_family = settings["font-family"]
+        self._font_size = settings["font-size"]
         self._update_font()
-
-    def set_tab_width(self, width: int):
-        self._view.set_tab_width(width)
-
-    def set_line_numbers(self, show: bool):
-        self._view.set_show_line_numbers(show)
+        self._view.set_tab_width(settings["tab-width"])
+        self._view.set_wrap_mode(
+            Gtk.WrapMode.WORD_CHAR if settings["word-wrap"] else Gtk.WrapMode.NONE
+        )
+        self._view.set_show_line_numbers(settings["line-numbers"])
 
     def zoom_in(self):
         self._zoom_level = min(3.0, self._zoom_level + 0.1)
@@ -142,6 +162,8 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._update_font()
 
     def goto_line(self, line: int):
+        """Move the cursor to a 0-based line and scroll it into view."""
+        line = max(0, min(line, self._buffer.get_line_count() - 1))
         it = self._iter_at_line(line)
         self._buffer.place_cursor(it)
         self._view.scroll_to_iter(it, 0.0, True, 0.0, 0.3)
@@ -153,11 +175,11 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         return result[1] if isinstance(result, tuple) else result
 
     def undo(self):
-        if self._buffer.can_undo():
+        if self._buffer.get_can_undo():
             self._buffer.undo()
 
     def redo(self):
-        if self._buffer.can_redo():
+        if self._buffer.get_can_redo():
             self._buffer.redo()
 
     def get_buffer(self) -> GtkSource.Buffer:

@@ -2,8 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-data/web/js/
-data/web/css-vendor/
+marker/data/web/js/
+marker/data/web/css-vendor/
 *.egg-info/
 dist/
 build/
