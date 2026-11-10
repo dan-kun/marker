@@ -8,3 +8,5 @@ marker/data/web/css-vendor/
 dist/
 build/
 .venv/
+# Claude Code agent worktrees
+.claude/worktrees/
