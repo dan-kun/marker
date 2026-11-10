@@ -74,7 +74,7 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     @property
     def preview(self):
-        return self.tab_manager.active_preview
+        return self.tab_manager.preview
 
     @property
     def split_view(self):
@@ -292,7 +292,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         tab = self.tab_manager.active_tab
         if tab is not None:
             getattr(tab.editor, method)()
-            getattr(tab.preview, method)()
+            self.preview.set_zoom(tab.editor.zoom_level)
 
     def _with_tab(self, func):
         tab = self.tab_manager.active_tab

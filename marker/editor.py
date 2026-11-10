@@ -53,8 +53,10 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._style_handler = Adw.StyleManager.get_default().connect(
             "notify::dark", self._apply_scheme
         )
-        self._buffer.connect("changed", self._on_buffer_changed)
-        self._buffer.connect("notify::cursor-position", self._on_cursor_moved)
+        self._buffer_handlers = [
+            self._buffer.connect("changed", self._on_buffer_changed),
+            self._buffer.connect("notify::cursor-position", self._on_cursor_moved),
+        ]
 
     def _apply_scheme(self, *_):
         """Use the light or dark Adwaita scheme to match the app's theme."""
@@ -111,6 +113,11 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         if self._style_handler:
             Adw.StyleManager.get_default().disconnect(self._style_handler)
             self._style_handler = 0
+        # These closures reference self; left connected they keep the
+        # editor and its whole text buffer alive after the tab closes.
+        for handler in self._buffer_handlers:
+            self._buffer.disconnect(handler)
+        self._buffer_handlers = []
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
@@ -159,6 +166,10 @@ class MarkdownEditor(Gtk.ScrolledWindow):
             Gtk.WrapMode.WORD_CHAR if settings["word-wrap"] else Gtk.WrapMode.NONE
         )
         self._view.set_show_line_numbers(settings["line-numbers"])
+
+    @property
+    def zoom_level(self) -> float:
+        return self._zoom_level
 
     def zoom_in(self):
         self._zoom_level = min(3.0, self._zoom_level + 0.1)

@@ -22,7 +22,6 @@ class TabData:
     """Per-tab widgets and the signal handlers to drop when the tab closes."""
 
     editor: MarkdownEditor
-    preview: MarkdownPreview
     split_view: SplitView
     file_manager: FileManager
     page: Adw.TabPage
@@ -65,6 +64,11 @@ class TabManager(Gtk.Box):
         self.append(self._tab_bar)
         self.append(self._tab_view)
 
+        # One preview for the whole window, moved into whichever tab is active
+        self.preview = MarkdownPreview()
+        self.preview.connect("open-file", self._on_preview_open_file)
+        self._preview_tab: TabData | None = None
+
         self._tab_view.connect("notify::selected-page", self._on_selected_page_changed)
         self._tab_view.connect("close-page", self._on_close_page)
         self._settings.connect("changed", self._on_settings_changed)
@@ -76,21 +80,25 @@ class TabManager(Gtk.Box):
     def _create_tab_data(self) -> TabData:
         editor = MarkdownEditor()
         editor.apply_settings(self._settings)
-        preview = MarkdownPreview()
-        split_view = SplitView(editor, preview)
+        active = self._active_tab()
+        # New tabs open in the view mode the user is currently working in
+        split_view = SplitView(editor, mode=active.split_view.get_mode() if active else "split")
         file_manager = FileManager(self._window, editor, self._recents_manager, self._settings)
 
         page = self._tab_view.append(split_view)
         page.set_title("Untitled")
         page.set_tooltip("")
 
-        tab = TabData(editor, preview, split_view, file_manager, page, [])
+        tab = TabData(editor, split_view, file_manager, page, [])
         tab.handlers = [
             (file_manager, file_manager.connect("file-changed", self._on_tab_file_changed, tab)),
             (file_manager, file_manager.connect("loaded", self._on_tab_loaded)),
-            (preview, preview.connect("open-file", self._on_preview_open_file)),
         ]
         self._tab_data[page] = tab
+        # Adw.TabView selects the first page as soon as it is appended,
+        # before the tab is registered above, so that notify is missed.
+        if self._tab_view.get_selected_page() is page:
+            self._move_preview_to(tab)
         return tab
 
     def _on_tab_file_changed(self, fm, path, is_modified, tab):
@@ -99,7 +107,7 @@ class TabManager(Gtk.Box):
         tab.page.set_indicator_icon(
             Gio.ThemedIcon.new("media-record-symbolic") if is_modified else None
         )
-        tab.preview.set_base_dir(os.path.dirname(path) if path else None)
+        tab.split_view.set_base_dir(os.path.dirname(path) if path else None)
 
     def _on_tab_loaded(self, fm, path):
         self.emit("file-opened", path)
@@ -112,7 +120,17 @@ class TabManager(Gtk.Box):
             tab.editor.apply_settings(settings)
 
     def _on_selected_page_changed(self, tab_view, param):
+        self._move_preview_to(self._active_tab())
         self.emit("active-tab-changed")
+
+    def _move_preview_to(self, tab: TabData | None):
+        if tab is self._preview_tab:
+            return
+        if self._preview_tab is not None:
+            self._preview_tab.split_view.detach_preview()
+        self._preview_tab = tab
+        if tab is not None:
+            tab.split_view.attach_preview(self.preview)
 
     def _on_close_page(self, tab_view, page):
         tab = self._tab_data.get(page)
@@ -135,9 +153,11 @@ class TabManager(Gtk.Box):
         for obj, handler in tab.handlers:
             obj.disconnect(handler)
         tab.handlers.clear()
+        if tab is self._preview_tab:
+            self._preview_tab = None
+        self.preview.forget_document(tab.split_view.doc_id)
         tab.file_manager.dispose()
         tab.split_view.dispose()
-        tab.preview.dispose()
         tab.editor.dispose()
 
     def _active_tab(self) -> TabData | None:
@@ -245,11 +265,6 @@ class TabManager(Gtk.Box):
     def active_editor(self) -> MarkdownEditor | None:
         tab = self._active_tab()
         return tab.editor if tab else None
-
-    @property
-    def active_preview(self) -> MarkdownPreview | None:
-        tab = self._active_tab()
-        return tab.preview if tab else None
 
     @property
     def active_split_view(self) -> SplitView | None:

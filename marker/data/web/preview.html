@@ -68,7 +68,7 @@
   <script src="js/katex.min.js"></script>
   <script src="js/auto-render.min.js"></script>
   <script src="js/highlight.min.js"></script>
-  <script src="js/mermaid.min.js"></script>
+  <!-- mermaid.min.js (2.7 MB) is loaded on demand: see loadMermaid() -->
 
   <script>
     // ── Markdown-it setup ─────────────────────────────────────────────────
@@ -83,6 +83,10 @@
       linkify: true,
       typographer: true,
       highlight: function(str, lang) {
+        if (lang === 'mermaid') {
+          // Replaced by the rendered diagram after sanitizing
+          return '<pre class="mermaid-source"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
+        }
         if (lang && window.hljs && hljs.getLanguage(lang)) {
           try {
             return '<pre class="hljs"><code>' +
@@ -98,31 +102,68 @@
       md.use(markdownitFootnote);
     }
 
-    // ── Mermaid setup ──────────────────────────────────────────────────────
-    function initMermaid(isDark) {
+    // ── State ──────────────────────────────────────────────────────────────
+    let _isDark = false;
+    let _mermaidCounter = 0;
+    let _renderGeneration = 0;
+    // The app shows one document at a time and tells us which (docId); we
+    // remember where each one was scrolled to, so switching tabs and
+    // re-rendering while typing both keep the reader's place.
+    let _docId = null;
+    const _scrollByDoc = new Map();
+
+    // ── Mermaid ────────────────────────────────────────────────────────────
+    // The library is only loaded once a document contains a diagram, and
+    // rendered SVGs are cached by source so that typing elsewhere in the
+    // document does not redraw (and flicker) every diagram.
+    const MERMAID_CACHE_SIZE = 100;
+    const _mermaidCache = new Map();
+    let _mermaidLoading = null;
+
+    function initMermaid() {
       if (!window.mermaid) return;
       mermaid.initialize({
         startOnLoad: false,
-        theme: isDark ? 'dark' : 'default',
+        theme: _isDark ? 'dark' : 'default',
         securityLevel: 'strict',
       });
     }
-    initMermaid(false);
 
-    // ── State ──────────────────────────────────────────────────────────────
-    let _mermaidCounter = 0;
-    let _renderGeneration = 0;
-    let _scrollPercent = null;
+    function loadMermaid() {
+      if (!_mermaidLoading) {
+        _mermaidLoading = new Promise((resolve) => {
+          const script = document.createElement('script');
+          script.src = 'js/mermaid.min.js';
+          script.onload = () => { initMermaid(); resolve(true); };
+          script.onerror = () => resolve(false);
+          document.head.appendChild(script);
+        });
+      }
+      return _mermaidLoading;
+    }
+
+    async function renderDiagram(code) {
+      const key = (_isDark ? 'dark|' : 'light|') + code;
+      const cached = _mermaidCache.get(key);
+      if (cached !== undefined) return cached;
+      const { svg } = await mermaid.render(`mermaid-${++_mermaidCounter}`, code);
+      if (_mermaidCache.size >= MERMAID_CACHE_SIZE) {
+        _mermaidCache.delete(_mermaidCache.keys().next().value);  // oldest entry
+      }
+      _mermaidCache.set(key, svg);
+      return svg;
+    }
 
     // ── Theme ──────────────────────────────────────────────────────────────
     function setTheme(isDark) {
+      _isDark = isDark;
       document.body.classList.toggle('dark', isDark);
       document.body.classList.toggle('light', !isDark);
       document.getElementById('hljs-theme').href =
         isDark ? 'css-vendor/highlight-dark.min.css' : 'css-vendor/highlight-light.min.css';
       document.getElementById('marker-theme').href =
         isDark ? 'css/preview-dark.css' : 'css/preview-light.css';
-      initMermaid(isDark);
+      initMermaid();
     }
 
     // ── Relative URLs ──────────────────────────────────────────────────────
@@ -145,47 +186,44 @@
     }
 
     // ── Render ─────────────────────────────────────────────────────────────
-    async function render(markdownText, baseUri) {
+    // scrollPercent (0..1), when given, is where the page is left after
+    // rendering; otherwise the document (docId) returns to where it was.
+    async function render(markdownText, baseUri, scrollPercent, docId) {
       const generation = ++_renderGeneration;
       const emptyState = document.getElementById('empty-state');
       const content = document.getElementById('content');
+      if (docId === undefined || docId === null) docId = _docId;
+      let scrollTarget = null;
+      if (typeof scrollPercent === 'number') scrollTarget = scrollPercent;
+      else if (_scrollByDoc.has(docId)) scrollTarget = _scrollByDoc.get(docId);
+      else if (docId !== _docId) scrollTarget = 0;
 
       if (!markdownText || markdownText.trim() === '') {
+        _docId = docId;
         emptyState.style.display = 'flex';
         content.style.display = 'none';
+        content.replaceChildren();
         return;
       }
 
       emptyState.style.display = 'none';
       content.style.display = 'block';
 
-      // Convert mermaid code blocks to placeholders before MD parsing
-      const mermaidBlocks = [];
-      const processedText = markdownText.replace(
-        /```mermaid\r?\n([\s\S]*?)```/g,
-        (match, code) => {
-          const id = `mermaid-placeholder-${mermaidBlocks.length}`;
-          mermaidBlocks.push({ id, code: code.trim() });
-          return `<div class="mermaid-placeholder" data-id="${id}"></div>`;
-        }
-      );
-
       // Render into a detached element so a slow render never touches the
       // DOM after a newer one has started.
       const fragment = document.createElement('div');
-      const html = md.render(processedText);
+      const html = md.render(markdownText);
       fragment.innerHTML = sanitize ? sanitize(html) : html;
       resolveRelativeUrls(fragment, baseUri);
 
-      if (window.mermaid) {
-        for (const block of mermaidBlocks) {
-          const placeholder = fragment.querySelector(`[data-id="${block.id}"]`);
-          if (!placeholder) continue;
+      const diagrams = fragment.querySelectorAll('pre.mermaid-source');
+      if (diagrams.length > 0 && await loadMermaid()) {
+        if (generation !== _renderGeneration) return;  // superseded while loading
+        for (const source of diagrams) {
           const wrapper = document.createElement('div');
           try {
-            const { svg } = await mermaid.render(`mermaid-${++_mermaidCounter}`, block.code);
+            wrapper.innerHTML = await renderDiagram(source.textContent.trim());
             wrapper.className = 'mermaid';
-            wrapper.innerHTML = svg;
           } catch (e) {
             wrapper.className = 'mermaid-error';
             const pre = document.createElement('pre');
@@ -193,7 +231,7 @@
             wrapper.appendChild(pre);
           }
           if (generation !== _renderGeneration) return;  // superseded
-          placeholder.replaceWith(wrapper);
+          source.replaceWith(wrapper);
         }
       }
 
@@ -210,8 +248,9 @@
       }
 
       if (generation !== _renderGeneration) return;
+      _docId = docId;
       content.replaceChildren(...fragment.childNodes);
-      if (_scrollPercent !== null) setScrollPercent(_scrollPercent);
+      if (scrollTarget !== null) setScrollPercent(scrollTarget);
     }
 
     // ── Scroll position ────────────────────────────────────────────────────
@@ -222,10 +261,18 @@
     }
 
     function setScrollPercent(pct) {
-      _scrollPercent = pct;
       const el = document.documentElement;
       el.scrollTop = pct * (el.scrollHeight - el.clientHeight);
+      if (_docId !== null) _scrollByDoc.set(_docId, pct);
     }
+
+    function forgetDocument(docId) {
+      _scrollByDoc.delete(docId);
+    }
+
+    window.addEventListener('scroll', () => {
+      if (_docId !== null) _scrollByDoc.set(_docId, getScrollPercent());
+    }, { passive: true });
   </script>
 </body>
 </html>

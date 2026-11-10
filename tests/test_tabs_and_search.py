@@ -45,12 +45,12 @@ def test_closed_tabs_are_released(window):
     import weakref
 
     tab = window.tab_manager.new_tab()
-    preview_ref = weakref.ref(tab.preview)
+    refs = [weakref.ref(tab.editor), weakref.ref(tab.editor.get_buffer()), weakref.ref(tab.file_manager)]
     window.tab_manager.close_active_tab()
     del tab
     iterate(0.2)
     gc.collect()
-    assert preview_ref() is None
+    assert [ref() for ref in refs] == [None, None, None]
 
 
 def test_find_next_advances(window):
@@ -141,17 +141,19 @@ def test_view_mode_buttons_follow_the_active_tab(window):
     first = tm.active_tab
     window.activate_action("win.preview-only", None)
     assert first.split_view.get_mode() == "preview"
-    second = tm.new_tab()
-    assert window.lookup_action("view-mode").get_state().get_string() == "split"
+    second = tm.new_tab()  # inherits the mode in use
+    assert window.lookup_action("view-mode").get_state().get_string() == "preview"
+    window.activate_action("win.editor-only", None)
+    assert second.split_view.get_mode() == "editor"
     tm.select(first)
     assert window.lookup_action("view-mode").get_state().get_string() == "preview"
-    assert second.split_view.get_mode() == "split"
+    assert first.split_view.get_mode() == "preview"
 
 
 def test_editor_scroll_is_mirrored_in_the_preview(window, monkeypatch):
     tab = window.tab_manager.active_tab
     fractions = []
-    monkeypatch.setattr(tab.preview, "scroll_to_fraction", fractions.append)
+    monkeypatch.setattr(window.preview, "scroll_to_fraction", fractions.append)
     tab.editor.set_text("line\n" * 2000)
     vadj = tab.editor.get_vadjustment()
     assert wait_for(lambda: vadj.get_upper() > vadj.get_page_size() * 2)

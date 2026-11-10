@@ -45,8 +45,7 @@ def js(preview, script: str):
 
 @pytest.fixture
 def preview(window):
-    tab = window.tab_manager.active_tab
-    p = tab.preview
+    p = window.preview
     assert wait_for(lambda: p._ready, timeout=15)
     return p
 
@@ -143,3 +142,76 @@ def test_dispose_disconnects_global_theme_handler(window):
     handler = p._style_handler
     p.dispose()
     assert not Adw.StyleManager.get_default().handler_is_connected(handler)
+
+
+def test_one_preview_follows_the_active_tab(preview, window, tmp_path):
+    """Tabs share a single WebView: switching tabs re-points it."""
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    a.write_text("# Document A")
+    b.write_text("# Document B")
+    tab_a = window.open_file(str(a))
+    assert wait_for(lambda: content_text(preview) == "Document A")
+    tab_b = window.open_file(str(b))
+    assert wait_for(lambda: content_text(preview) == "Document B")
+    assert preview.get_parent() is tab_b.split_view
+
+    window.tab_manager.select(tab_a)
+    assert preview.get_parent() is tab_a.split_view
+    assert wait_for(lambda: content_text(preview) == "Document A")
+
+    # closing the active tab hands the preview to the tab that takes over
+    window.tab_manager.close_active_tab()
+    assert wait_for(lambda: preview.get_parent() is tab_b.split_view)
+    assert wait_for(lambda: content_text(preview) == "Document B")
+
+
+def test_preview_is_not_rendered_while_hidden(preview, window, tmp_path):
+    rendered = []
+    original = preview.render
+    preview.render = lambda text, scroll=None: (rendered.append(text), original(text, scroll))[1]
+    try:
+        window.activate_action("win.editor-only", None)
+        window.editor.set_text("# hidden")
+        tab = window.tab_manager.new_tab()
+        tab.split_view.set_mode("editor")
+        tab.editor.set_text("# also hidden")
+        wait_for(lambda: False, timeout=0.5)
+        assert rendered == []
+        tab.split_view.set_mode("split")
+        assert rendered == ["# also hidden"]
+    finally:
+        del preview.render
+        for t in window.tab_manager.tabs():
+            t.editor.get_buffer().set_modified(False)
+
+
+def test_preview_only_scroll_position_is_kept_per_tab(preview, window):
+    first = window.tab_manager.active_tab
+    first.editor.set_text("\n\n".join(f"paragraph {i}" for i in range(400)))
+    first.split_view.set_mode("preview")
+    assert wait_for(lambda: js(preview, "return document.documentElement.scrollHeight") > 3000)
+    js(preview, "setScrollPercent(0.5); return true")
+
+    window.tab_manager.new_tab()  # preview moves to the new, empty tab
+    window.tab_manager.select(first)
+    assert wait_for(lambda: abs(js(preview, "return getScrollPercent()") - 0.5) < 0.02)
+    first.editor.get_buffer().set_modified(False)
+
+
+def test_mermaid_is_loaded_on_demand_and_diagrams_are_cached(preview):
+    render(preview, "plain text")
+    assert js(preview, "return typeof window.mermaid") == "undefined"
+
+    diagram = "```mermaid\ngraph TD; A-->B\n```\n"
+    preview.render(diagram + "\none")
+    has_diagram = "return !!document.querySelector('#content .mermaid svg')"
+    assert wait_for(lambda: js(preview, has_diagram), timeout=15)
+    renders = js(preview, "return _mermaidCounter")
+    preview.render(diagram + "\ntwo")  # the diagram itself did not change
+    assert wait_for(lambda: content_text(preview).endswith("two"))
+    assert js(preview, has_diagram)
+    assert js(preview, "return _mermaidCounter") == renders
+
+    # a fenced mermaid block nested in another code block stays as code
+    render(preview, "````md\n```mermaid\ngraph TD; A-->B\n```\n````\n")
+    assert js(preview, "return document.querySelectorAll('#content .mermaid').length") == 0

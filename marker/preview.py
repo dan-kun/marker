@@ -31,6 +31,7 @@ function render(text) {
 }
 function setTheme(isDark) {}
 function setScrollPercent(pct) {}
+function forgetDocument(id) {}
 </script>
 </body></html>"""
 
@@ -44,7 +45,11 @@ def _preview_uri() -> str:
 
 
 class MarkdownPreview(Gtk.Box):
-    """WebKit preview panel for rendered Markdown."""
+    """WebKit preview panel for rendered Markdown.
+
+    A window has one preview, shared by all its tabs: each WebView runs its
+    own web process (about 100 MB), and only the active tab is ever visible.
+    """
 
     __gsignals__ = {
         # A link to a local text file was clicked
@@ -54,10 +59,11 @@ class MarkdownPreview(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
-        self._zoom_level = 1.0
         self._ready = False
         self._disposed = False
         self._text: str | None = None
+        self._scroll: float | None = None  # scroll fraction to apply with the next render
+        self._doc_id = 0  # which document is showing; the page keeps a scroll position per id
         self._base_uri: str | None = None
         self._page_uri = _preview_uri()
 
@@ -161,24 +167,47 @@ class MarkdownPreview(Gtk.Box):
             self._webview.evaluate_javascript(script, -1, None, None, None, None, None)
 
     def _js_render(self):
-        self._js(f"render({json.dumps(self._text)}, {json.dumps(self._base_uri)})")
+        if not self._ready or self._disposed:
+            return  # flushed when the page finishes loading
+        args = (self._text, self._base_uri, self._scroll, self._doc_id)
+        self._scroll = None
+        self._js("render({}, {}, {}, {})".format(*map(json.dumps, args)))
 
     def _js_set_theme(self):
         self._js(f"setTheme({json.dumps(self._is_dark)})")
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def render(self, text: str):
+    def render(self, text: str, scroll: float | None = None):
+        """Render text. scroll (0..1) positions the page once it is rendered;
+        None keeps the current position."""
         self._text = text
-        self._js_render()  # no-op until the page has loaded; flushed on FINISHED
+        if scroll is not None:
+            self._scroll = scroll
+        self._js_render()
 
-    def set_base_dir(self, directory: str | None):
+    def set_base_dir(self, directory: str | None, rerender: bool = True):
         """Resolve relative links and images against the document's folder."""
         uri = Gio.File.new_for_path(directory).get_uri().rstrip("/") + "/" if directory else None
         if uri != self._base_uri:
             self._base_uri = uri
-            if self._text is not None:
+            if rerender and self._text is not None:
                 self._js_render()
+
+    def show_document(self, doc_id: int, text: str, directory: str | None,
+                      scroll: float | None = None):
+        """Switch the preview to another document in a single render.
+
+        With scroll=None the page returns to where this document (doc_id)
+        was last left.
+        """
+        self._doc_id = doc_id
+        self._scroll = None
+        self.set_base_dir(directory, rerender=False)
+        self.render(text, scroll)
+
+    def forget_document(self, doc_id: int):
+        self._js(f"forgetDocument({int(doc_id)})")
 
     def scroll_to_fraction(self, fraction: float):
         self._js(f"setScrollPercent({fraction:.4f})")
@@ -186,14 +215,5 @@ class MarkdownPreview(Gtk.Box):
     def get_webview(self) -> WebKit.WebView:
         return self._webview
 
-    def zoom_in(self):
-        self._zoom_level = min(3.0, self._zoom_level + 0.1)
-        self._webview.set_zoom_level(self._zoom_level)
-
-    def zoom_out(self):
-        self._zoom_level = max(0.3, self._zoom_level - 0.1)
-        self._webview.set_zoom_level(self._zoom_level)
-
-    def zoom_reset(self):
-        self._zoom_level = 1.0
-        self._webview.set_zoom_level(self._zoom_level)
+    def set_zoom(self, level: float):
+        self._webview.set_zoom_level(max(0.3, min(3.0, level)))
