@@ -1,5 +1,6 @@
 """Tabs, search and sidebar behaviour."""
 
+import pytest
 from conftest import iterate, needs_display, wait_for
 
 pytestmark = needs_display
@@ -229,3 +230,24 @@ def test_open_path_accepts_folders_and_new_files(window, dialogs_log, tmp_path):
     assert window.open_path(str(tmp_path / "nope" / "x.md")) is None
     assert window.open_file(str(tmp_path / "other.md")) is None
     assert len(dialogs_log) == 2
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # the fallback uses Gtk.MessageDialog
+def test_message_dialogs_work_without_adw_message_dialog(window, monkeypatch):
+    """libadwaita 1.1 has no Adw.MessageDialog; the Gtk fallback must behave the same."""
+    from gi.repository import Gtk
+
+    from marker import dialogs
+
+    monkeypatch.setattr(dialogs, "_HAS_ADW_MESSAGE_DIALOG", False)
+    answers = []
+    dialog = dialogs.ask(
+        window, "Go to Line", "", [("cancel", "Cancel", None), ("go", "Go", "suggested")],
+        default="go", on_response=answers.append, extra_child=Gtk.Entry(),
+    )
+    assert isinstance(dialog.widget, Gtk.MessageDialog)
+    dialog.respond("go")
+    closed = dialogs.ask_unsaved_changes(window, "x.md", answers.append)
+    closed.widget.close()
+    iterate(0.2)
+    assert answers == ["go", "cancel"]

@@ -82,7 +82,7 @@ text files open in a Marker tab.
 ## Development
 
 ```sh
-sudo apt install python3-pytest xvfb    # plus the packages above
+sudo apt install python3-pytest xvfb xdotool   # plus the packages above
 bash scripts/fetch-deps.sh               # the preview tests need the libraries
 xvfb-run -a python3 -m pytest            # GUI tests need a display
 ruff check .

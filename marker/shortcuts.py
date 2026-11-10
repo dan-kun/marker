@@ -15,6 +15,7 @@ class Shortcut:
     accels: tuple[str, ...]
     action: str | None = None  # None: built into the editor, listed for reference
     label: str | None = None   # custom text for the help window
+    editor_only: bool = False  # active only while the cursor is in the editor
 
 
 SHORTCUT_GROUPS: list[tuple[str, list[Shortcut]]] = [
@@ -37,10 +38,12 @@ SHORTCUT_GROUPS: list[tuple[str, list[Shortcut]]] = [
         Shortcut("Go to line", ("<Ctrl>g",), "win.goto-line"),
     ]),
     ("Formatting", [
-        Shortcut("Bold", ("<Ctrl>b",), "win.format-bold"),
-        Shortcut("Italic", ("<Ctrl>i",), "win.format-italic"),
-        Shortcut("Inline code / code block", ("<Ctrl>grave",), "win.format-code"),
-        Shortcut("Link", ("<Ctrl>l",), "win.format-link"),
+        Shortcut("Bold", ("<Ctrl>b",), "win.format-bold", editor_only=True),
+        Shortcut("Italic", ("<Ctrl>i",), "win.format-italic", editor_only=True),
+        Shortcut("Inline code / code block", ("<Ctrl>grave",), "win.format-code", editor_only=True),
+        Shortcut("Link", ("<Ctrl>l",), "win.format-link", editor_only=True),
+        Shortcut("Continue list / end list", ("Return",), label="Enter"),
+        Shortcut("Indent / outdent list item", ("Tab",), label="Tab / Shift+Tab"),
     ]),
     ("Search", [
         Shortcut("Find in file", ("<Ctrl>f",), "win.find"),
@@ -68,13 +71,22 @@ SHORTCUT_GROUPS: list[tuple[str, list[Shortcut]]] = [
 
 
 def iter_accels():
-    """Yield (detailed action name, accels) for every bindable shortcut."""
+    """Yield (detailed action name, accels) for every window-wide shortcut."""
     for _, shortcuts in SHORTCUT_GROUPS:
         for shortcut in shortcuts:
-            if shortcut.action is not None:
+            if shortcut.action is not None and not shortcut.editor_only:
                 yield shortcut.action, list(shortcut.accels)
     for i in range(1, 10):
         yield f"win.goto-tab({i})", [f"<Ctrl>{i}"]
+
+
+def editor_accels():
+    """Yield (accel, action name) for shortcuts that only work in the editor."""
+    for _, shortcuts in SHORTCUT_GROUPS:
+        for shortcut in shortcuts:
+            if shortcut.action is not None and shortcut.editor_only:
+                for accel in shortcut.accels:
+                    yield accel, shortcut.action
 
 
 def accel_label(shortcut: Shortcut) -> str:

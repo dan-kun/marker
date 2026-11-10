@@ -215,3 +215,23 @@ def test_mermaid_is_loaded_on_demand_and_diagrams_are_cached(preview):
     # a fenced mermaid block nested in another code block stays as code
     render(preview, "````md\n```mermaid\ngraph TD; A-->B\n```\n````\n")
     assert js(preview, "return document.querySelectorAll('#content .mermaid').length") == 0
+
+
+def test_headings_get_ids_and_task_lists_get_checkboxes(preview):
+    render(preview, "# Mi Título: instalación\n\n## Uso\n\n## Uso\n\n"
+                    "- [ ] todo\n- [x] done\n- plain\n\n1. [X] numbered\n")
+    ids = js(preview, "return [...document.querySelectorAll('#content h1, #content h2')].map(h => h.id)")
+    assert ids == ["mi-título-instalación", "uso", "uso-1"]
+    boxes = js(preview, """return [...document.querySelectorAll('#content input[type=checkbox]')]
+        .map(b => [b.checked, b.disabled, b.closest('li').textContent.trim()])""")
+    assert boxes == [[False, True, "todo"], [True, True, "done"], [True, True, "numbered"]]
+    assert js(preview, "return document.querySelectorAll('#content li.task-list-item').length") == 3
+
+
+def test_in_document_links_scroll_to_the_heading(preview):
+    filler = "\n\n".join(f"paragraph {i}" for i in range(200))
+    render(preview, f"[jump](#destino)\n\n{filler}\n\n## Destino\n\nend")
+    uri = preview.get_webview().get_uri()
+    js(preview, "document.querySelector('#content a').click(); return true")
+    assert wait_for(lambda: js(preview, "return document.documentElement.scrollTop") > 1000)
+    assert preview.get_webview().get_uri().split("#")[0] == uri.split("#")[0]

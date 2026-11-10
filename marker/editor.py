@@ -11,6 +11,9 @@ gi.require_version("GtkSource", "5")
 
 from gi.repository import Adw, Gdk, GObject, Gtk, GtkSource
 
+from . import mdedit
+from .shortcuts import editor_accels
+
 _editor_ids = itertools.count(1)
 
 
@@ -88,6 +91,22 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._view.set_top_margin(8)
         self._view.set_bottom_margin(8)
 
+        # List editing: Enter continues a list, Tab / Shift+Tab nest items.
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key_pressed)
+        self._view.add_controller(keys)
+        self._key_controller = keys
+
+        # Formatting shortcuts belong to the editor, not the whole window:
+        # Ctrl+B while typing in the search box must not edit the document.
+        shortcuts = Gtk.ShortcutController()
+        for accel, action in editor_accels():
+            shortcuts.add_shortcut(Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string(accel), Gtk.NamedAction.new(action)
+            ))
+        self._view.add_controller(shortcuts)
+
         # One provider per editor, registered once and scoped by widget name.
         self._display = Gdk.Display.get_default()
         if self._display is not None:
@@ -118,6 +137,9 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         for handler in self._buffer_handlers:
             self._buffer.disconnect(handler)
         self._buffer_handlers = []
+        if self._key_controller is not None:
+            self._view.remove_controller(self._key_controller)
+            self._key_controller = None
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
@@ -214,26 +236,23 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._view.grab_focus()
 
     # ── Markdown insert helpers ────────────────────────────────────────────
+    # Each helper toggles: applying it to text that already has the
+    # formatting removes it. The rules live in mdedit.py.
 
     def insert_bold(self):
-        self._wrap_selection("**", "**")
+        self._toggle_wrap("**", "**")
 
     def insert_italic(self):
-        self._wrap_selection("*", "*")
+        self._toggle_wrap("*", "*")
 
     def insert_code(self):
         buf = self._buffer
         if buf.get_has_selection():
             start, end = buf.get_selection_bounds()
-            text = buf.get_text(start, end, True)
-            if "\n" in text:
-                buf.begin_user_action()
-                buf.delete(start, end)
-                it = buf.get_iter_at_mark(buf.get_insert())
-                buf.insert(it, f"```\n{text}\n```")
-                buf.end_user_action()
+            if "\n" in buf.get_text(start, end, True):
+                self._toggle_wrap("```\n", "\n```")
                 return
-        self._wrap_selection("`", "`")
+        self._toggle_wrap("`", "`")
 
     def insert_heading(self, level: int):
         prefix = "#" * level + " "
@@ -289,57 +308,124 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         buf.end_user_action()
 
     def insert_bullet_list(self):
-        self._prefix_lines("- ")
+        self._rewrite_lines(mdedit.toggle_bullets)
 
     def insert_numbered_list(self):
-        self._prefix_lines_numbered()
+        self._rewrite_lines(mdedit.toggle_numbering)
 
-    def _wrap_selection(self, prefix: str, suffix: str):
-        buf = self._buffer
-        buf.begin_user_action()
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
-            text = buf.get_text(start, end, True)
-            buf.delete(start, end)
-            it = buf.get_iter_at_mark(buf.get_insert())
-            buf.insert(it, f"{prefix}{text}{suffix}")
-        else:
-            it = buf.get_iter_at_mark(buf.get_insert())
-            buf.insert(it, f"{prefix}{suffix}")
-            it = buf.get_iter_at_mark(buf.get_insert())
-            it.backward_chars(len(suffix))
-            buf.place_cursor(it)
-        buf.end_user_action()
-
-    def _prefix_lines(self, prefix: str):
+    def _toggle_wrap(self, prefix: str, suffix: str):
         buf = self._buffer
         if buf.get_has_selection():
             start, end = buf.get_selection_bounds()
-            start_line = start.get_line()
-            end_line = end.get_line()
-            if end.get_line_offset() == 0 and end_line > start_line:
-                end_line -= 1
         else:
-            start_line = end_line = buf.get_iter_at_mark(buf.get_insert()).get_line()
+            start = buf.get_iter_at_mark(buf.get_insert())
+            end = start.copy()
+
+        # mdedit only needs the selection plus the few characters around it
+        context_start, context_end = start.copy(), end.copy()
+        context_start.backward_chars(len(prefix) + 2)
+        context_end.forward_chars(len(suffix) + 2)
+        base = context_start.get_offset()
+        edit = mdedit.toggle_wrap(
+            buf.get_text(context_start, context_end, True),
+            start.get_offset() - base, end.get_offset() - base, prefix, suffix,
+        )
 
         buf.begin_user_action()
-        for line in range(end_line, start_line - 1, -1):
-            buf.insert(self._iter_at_line(line), prefix)
+        edit_start = buf.get_iter_at_offset(base + edit.start)
+        buf.delete(edit_start, buf.get_iter_at_offset(base + edit.end))
+        buf.insert(edit_start, edit.text)
+        buf.select_range(
+            buf.get_iter_at_offset(base + edit.select_start),
+            buf.get_iter_at_offset(base + edit.select_end),
+        )
         buf.end_user_action()
 
-    def _prefix_lines_numbered(self):
+    def _selected_line_range(self) -> tuple[int, int]:
+        """First and last line touched by the selection (or the cursor's line)."""
         buf = self._buffer
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
-            start_line = start.get_line()
-            end_line = end.get_line()
-            if end.get_line_offset() == 0 and end_line > start_line:
-                end_line -= 1
-        else:
-            start_line = end_line = buf.get_iter_at_mark(buf.get_insert()).get_line()
+        if not buf.get_has_selection():
+            line = buf.get_iter_at_mark(buf.get_insert()).get_line()
+            return line, line
+        start, end = buf.get_selection_bounds()
+        first, last = start.get_line(), end.get_line()
+        if end.get_line_offset() == 0 and last > first:
+            last -= 1  # a selection ending at a line's start does not include that line
+        return first, last
 
-        count = end_line - start_line + 1
+    def _rewrite_lines(self, transform):
+        """Replace the selected lines with transform(lines)."""
+        buf = self._buffer
+        first, last = self._selected_line_range()
+        start = self._iter_at_line(first)
+        end = self._iter_at_line(last)
+        if not end.ends_line():
+            end.forward_to_line_end()
+        lines = buf.get_text(start, end, True).split("\n")
+
         buf.begin_user_action()
-        for i, line in enumerate(range(end_line, start_line - 1, -1)):
-            buf.insert(self._iter_at_line(line), f"{count - i}. ")
+        buf.delete(start, end)
+        buf.insert(start, "\n".join(transform(lines)))
         buf.end_user_action()
+
+    # ── Keys ───────────────────────────────────────────────────────────────
+
+    def _current_line(self) -> tuple[Gtk.TextIter, str, int]:
+        """(iter at line start, line text, cursor column) for the cursor's line."""
+        buf = self._buffer
+        cursor = buf.get_iter_at_mark(buf.get_insert())
+        line_start = self._iter_at_line(cursor.get_line())
+        line_end = line_start.copy()
+        if not line_end.ends_line():
+            line_end.forward_to_line_end()
+        return line_start, buf.get_text(line_start, line_end, True), cursor.get_line_offset()
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        buf = self._buffer
+        if buf.get_has_selection() or not self._view.get_editable():
+            return False
+        modifiers = state & (
+            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK
+        )
+        if modifiers:
+            return False
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not shift:
+            return self._continue_list()
+        if keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            return self._indent_list_item(unindent=shift or keyval == Gdk.KEY_ISO_Left_Tab)
+        return False
+
+    def _continue_list(self) -> bool:
+        """Enter in a list item starts the next one; in an empty item it ends the list."""
+        buf = self._buffer
+        line_start, line, column = self._current_line()
+        action = mdedit.list_enter(line, column)
+        if action is None:
+            return False
+        kind, text = action
+        buf.begin_user_action()
+        if kind == "continue":
+            buf.insert_at_cursor(text)
+        else:
+            marker_end = line_start.copy()
+            marker_end.forward_chars(len(text))
+            buf.delete(line_start, marker_end)
+        buf.end_user_action()
+        self._view.scroll_mark_onscreen(buf.get_insert())
+        return True
+
+    def _indent_list_item(self, unindent: bool) -> bool:
+        """Tab / Shift+Tab on a list item changes its nesting level."""
+        line_start, line, _ = self._current_line()
+        if mdedit.list_item_end(line) is None:
+            return False
+        line_end = line_start.copy()
+        if not line_end.ends_line():
+            line_end.forward_to_line_end()
+        if unindent:
+            self._view.unindent_lines(line_start, line_end)
+        else:
+            self._view.indent_lines(line_start, line_end)
+        return True
