@@ -199,6 +199,15 @@ class MarkdownEditor(Gtk.ScrolledWindow):
             self._zoom_level = level
             self._update_font()
 
+    def get_top_line(self) -> float:
+        """The 0-based line at the top of the visible area, with a fraction
+        for how far that line (which may wrap over many rows) is scrolled."""
+        top = self._view.get_visible_rect().y
+        it, _ = self._view.get_line_at_y(top)
+        line_y, line_height = self._view.get_line_yrange(it)
+        inside = (top - line_y) / line_height if line_height > 0 else 0.0
+        return it.get_line() + min(1.0, max(0.0, inside))
+
     def set_cursor_position(self, line: int, column: int):
         """Place the cursor at a 1-based (line, column), clamped to the text,
         and keep it in view. Unlike goto_line() this does not take the focus."""
@@ -236,8 +245,13 @@ class MarkdownEditor(Gtk.ScrolledWindow):
     def get_view(self) -> GtkSource.View:
         return self._view
 
-    def grab_focus(self):
-        self._view.grab_focus()
+    def grab_focus(self) -> bool:
+        return self._view.grab_focus()
+
+    def get_selection(self) -> tuple[Gtk.TextIter, Gtk.TextIter] | None:
+        """(start, end) of the selected text, or None when nothing is selected."""
+        bounds = self._buffer.get_selection_bounds()
+        return (bounds[0], bounds[1]) if bounds else None
 
     # ── Markdown insert helpers ────────────────────────────────────────────
     # Each helper toggles: applying it to text that already has the
@@ -250,12 +264,10 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._toggle_wrap("*", "*")
 
     def insert_code(self):
-        buf = self._buffer
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
-            if "\n" in buf.get_text(start, end, True):
-                self._toggle_wrap("```\n", "\n```")
-                return
+        selection = self.get_selection()
+        if selection and "\n" in self._buffer.get_text(*selection, True):
+            self._toggle_wrap("```\n", "\n```")
+            return
         self._toggle_wrap("`", "`")
 
     def insert_heading(self, level: int):
@@ -286,9 +298,10 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def insert_link(self):
         buf = self._buffer
+        selection = self.get_selection()
         buf.begin_user_action()
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
+        if selection:
+            start, end = selection
             text = buf.get_text(start, end, True)
             buf.delete(start, end)
             it = buf.get_iter_at_mark(buf.get_insert())
@@ -319,8 +332,9 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def _toggle_wrap(self, prefix: str, suffix: str):
         buf = self._buffer
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
+        selection = self.get_selection()
+        if selection:
+            start, end = selection
         else:
             start = buf.get_iter_at_mark(buf.get_insert())
             end = start.copy()
@@ -348,10 +362,11 @@ class MarkdownEditor(Gtk.ScrolledWindow):
     def _selected_line_range(self) -> tuple[int, int]:
         """First and last line touched by the selection (or the cursor's line)."""
         buf = self._buffer
-        if not buf.get_has_selection():
+        selection = self.get_selection()
+        if not selection:
             line = buf.get_iter_at_mark(buf.get_insert()).get_line()
             return line, line
-        start, end = buf.get_selection_bounds()
+        start, end = selection
         first, last = start.get_line(), end.get_line()
         if end.get_line_offset() == 0 and last > first:
             last -= 1  # a selection ending at a line's start does not include that line

@@ -11,6 +11,41 @@ from .filetypes import icon_name
 from .recents import SIDEBAR_LIMIT, RecentFilesManager, format_relative_time
 
 
+class RecentRow(Gtk.ListBoxRow):
+    """A recently opened file with how long ago it was opened."""
+
+    def __init__(self, path: str, opened_at: float):
+        super().__init__()
+        self.path = path
+        self.opened_at = opened_at
+        self.set_tooltip_text(path)
+
+        box = Gtk.Box(spacing=6)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_margin_top(3)
+        box.set_margin_bottom(3)
+
+        icon = Gtk.Image.new_from_icon_name(icon_name(path))
+        icon.set_pixel_size(16)
+        box.append(icon)
+
+        label = Gtk.Label(label=os.path.basename(path), xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_hexpand(True)
+        box.append(label)
+
+        self._time_label = Gtk.Label(label=format_relative_time(opened_at), xalign=1)
+        self._time_label.add_css_class("caption")
+        self._time_label.add_css_class("dim-label")
+        box.append(self._time_label)
+
+        self.set_child(box)
+
+    def update_time(self):
+        self._time_label.set_text(format_relative_time(self.opened_at))
+
+
 class RecentsSection(Gtk.Box):
     """Collapsible recent-files section shown above the file tree in the sidebar."""
 
@@ -73,45 +108,16 @@ class RecentsSection(Gtk.Box):
         recents = self._manager.get_recents(limit=SIDEBAR_LIMIT)
         self.set_visible(bool(recents))
         for entry in recents:
-            self._list_box.append(self._make_row(entry["path"], entry["opened_at"]))
-
-    def _make_row(self, path: str, opened_at: float) -> Gtk.ListBoxRow:
-        row = Gtk.ListBoxRow()
-        row.path = path  # type: ignore[attr-defined]
-
-        box = Gtk.Box(spacing=6)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.set_margin_top(3)
-        box.set_margin_bottom(3)
-
-        icon = Gtk.Image.new_from_icon_name(icon_name(path))
-        icon.set_pixel_size(16)
-        box.append(icon)
-
-        label = Gtk.Label(label=os.path.basename(path), xalign=0)
-        label.set_ellipsize(Pango.EllipsizeMode.END)
-        label.set_hexpand(True)
-        box.append(label)
-
-        time_label = Gtk.Label(label=format_relative_time(opened_at), xalign=1)
-        time_label.add_css_class("caption")
-        time_label.add_css_class("dim-label")
-        box.append(time_label)
-        row.time_label = time_label  # type: ignore[attr-defined]
-        row.opened_at = opened_at  # type: ignore[attr-defined]
-
-        row.set_child(box)
-        row.set_tooltip_text(path)
-        return row
+            self._list_box.append(RecentRow(entry["path"], entry["opened_at"]))
 
     def _update_times(self):
         index = 0
         while (row := self._list_box.get_row_at_index(index)) is not None:
-            row.time_label.set_text(format_relative_time(row.opened_at))
+            if isinstance(row, RecentRow):
+                row.update_time()
             index += 1
         return GLib.SOURCE_CONTINUE
 
     def _on_row_activated(self, listbox, row):
-        if row is not None:
+        if isinstance(row, RecentRow):
             self.emit("file-activated", row.path)

@@ -59,10 +59,13 @@ class FormatToolbar(Gtk.Box):
         label: str | None = None,
         target: GLib.Variant | None = None,
     ) -> Gtk.Button:
-        # Only pass the properties that are set: icon_name=None triggers
-        # a Gtk-CRITICAL in gtk_button_set_icon_name().
-        props = {"icon_name": icon} if icon else {"label": label}
-        btn = Gtk.Button(tooltip_text=tip, action_name=action, **props)
+        # Only set the property that was given: icon_name=None triggers a
+        # Gtk-CRITICAL in gtk_button_set_icon_name().
+        btn = Gtk.Button(tooltip_text=tip, action_name=action)
+        if icon:
+            btn.set_icon_name(icon)
+        elif label:
+            btn.set_label(label)
         if target is not None:
             btn.set_action_target_value(target)
         return btn

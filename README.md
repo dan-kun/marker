@@ -3,11 +3,14 @@
 A Markdown and plain-text editor for the Linux desktop, built with GTK 4,
 libadwaita, GtkSourceView and WebKitGTK.
 
-- Live preview with syntax highlighting, KaTeX math, Mermaid diagrams and footnotes
+- Live preview with syntax highlighting, KaTeX math, Mermaid diagrams, footnotes,
+  task lists and working in-document links; scrolling follows the editor line by line
 - Tabs, file explorer, recent files, minimap
 - Find & replace, regex search, search across a folder
 - Keeps each file's encoding and line endings; saves atomically
-- Formatting toolbar and shortcuts (Ctrl+B, Ctrl+I, Ctrl+L, headings, lists)
+- Formatting toolbar and shortcuts that toggle (Ctrl+B, Ctrl+I, Ctrl+L, headings, lists);
+  Enter continues lists, Tab and Shift+Tab nest them
+- Follows changes made by other programs, and reopens your last session
 
 ## Requirements
 
@@ -65,11 +68,34 @@ bash scripts/fetch-deps.sh
 pip install .
 ```
 
+### Flatpak
+
+A manifest for the GNOME runtime is in `flatpak/`. It needs no packages from
+your distribution:
+
+```sh
+flatpak-builder --user --install --force-clean --install-deps-from=flathub \
+    build-dir flatpak/io.github.dan_kun.Marker.yml
+flatpak run io.github.dan_kun.Marker
+```
+
+The same build can be run on GitHub from the Actions tab ("Flatpak" workflow).
+
+## Using it from a terminal
+
+```sh
+marker notes.md other.md   # open files in tabs
+marker new.md              # start a document that is created on first save
+marker ~/notes             # open a folder in the file explorer
+marker                     # reopen the last session
+```
+
 ## Configuration
 
 Preferences (Ctrl+,) are saved to `~/.config/marker/settings.json` and apply
 immediately to every tab. Recent files are kept in
-`~/.config/marker/recents.json`.
+`~/.config/marker/recents.json`, and the window layout and open files in
+`~/.config/marker/session.json`.
 
 ## Security
 
@@ -88,12 +114,26 @@ xvfb-run -a python3 -m pytest            # GUI tests need a display
 ruff check .
 ```
 
+The tests that type real keys use `xdotool` and are skipped without it.
+
+Type checking uses pyright with the PyGObject stubs. The stubs depend on
+PyGObject from PyPI, which the system package already provides, so install
+them without dependencies:
+
+```sh
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install pyright
+.venv/bin/pip install --no-deps --config-settings=config=Gtk4,Gdk4,GtkSource5 pygobject-stubs
+.venv/bin/pyright --pythonpath .venv/bin/python
+```
+
 `scripts/package.sh` creates `dist/marker-<version>.zip` from the committed
 sources.
 
-To update a preview library, change its version in `scripts/fetch-deps.sh`,
-then update the matching lines in `scripts/vendor.sha256` with the SHA-256 of
-the new files.
+To update a preview library, change its version in `scripts/vendor-files.txt`,
+update the matching lines in `scripts/vendor.sha256` with the SHA-256 of the
+new files, and run `scripts/flatpak-sources.py` to regenerate the Flatpak
+source list.
 
 ## License
 

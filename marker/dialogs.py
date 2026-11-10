@@ -72,7 +72,9 @@ class MessageDialog:
             if default in self._ids:
                 self.widget.set_default_response(self._ids.index(default))
             if extra_child is not None:
-                self.widget.get_message_area().append(extra_child)
+                area = self.widget.get_message_area()
+                if isinstance(area, Gtk.Box):
+                    area.append(extra_child)
             self.widget.connect("response", self._on_gtk_response)
 
     def _on_gtk_response(self, dialog, response: int):
@@ -93,10 +95,10 @@ class MessageDialog:
 
     def respond(self, rid: str):
         """Answer the dialog programmatically (Enter in an extra entry, tests)."""
-        if _HAS_ADW_MESSAGE_DIALOG:
-            self.widget.response(rid)
-        else:
+        if isinstance(self.widget, Gtk.MessageDialog):
             self.widget.response(self._ids.index(rid))
+        else:
+            self.widget.response(rid)
 
 
 def ask(parent, heading, body, responses, **kwargs) -> MessageDialog:

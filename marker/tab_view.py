@@ -67,6 +67,7 @@ class TabManager(Gtk.Box):
         # One preview for the whole window, moved into whichever tab is active
         self.preview = MarkdownPreview()
         self.preview.connect("open-file", self._on_preview_open_file)
+        self.preview.connect("line-activated", self._on_preview_line_activated)
         self._preview_tab: TabData | None = None
         self._zoom = 1.0  # shared by every tab's editor and the preview
 
@@ -124,6 +125,11 @@ class TabManager(Gtk.Box):
             if other is not tab and other_path and _same_file(other_path, path) \
                     and not other.file_manager.is_modified:
                 self._tab_view.close_page(other.page)
+
+    def _on_preview_line_activated(self, preview, line):
+        tab = self._active_tab()
+        if tab is not None:
+            tab.editor.goto_line(line)
 
     def _on_preview_open_file(self, preview, path):
         self.open_file(path)

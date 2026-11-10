@@ -11,28 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_DIR="$SCRIPT_DIR/../marker/data/web"
 SUMS="$SCRIPT_DIR/vendor.sha256"
 
-KATEX="katex@0.16.11"
+LIST="$SCRIPT_DIR/vendor-files.txt"
 
 # destination (relative to WEB_DIR) | npm package@version | path inside the package
-FILES=(
-    "js/purify.min.js|dompurify@3.2.7|dist/purify.min.js"
-    "js/markdown-it.min.js|markdown-it@14.1.0|dist/markdown-it.min.js"
-    "js/markdown-it-footnote.min.js|markdown-it-footnote@3.0.3|dist/markdown-it-footnote.min.js"
-    "js/katex.min.js|$KATEX|dist/katex.min.js"
-    "js/auto-render.min.js|$KATEX|dist/contrib/auto-render.min.js"
-    "js/highlight.min.js|@highlightjs/cdn-assets@11.9.0|highlight.min.js"
-    "js/mermaid.min.js|mermaid@11.12.0|dist/mermaid.min.js"
-    "css-vendor/katex.min.css|$KATEX|dist/katex.min.css"
-    "css-vendor/highlight-light.min.css|@highlightjs/cdn-assets@11.9.0|styles/github.min.css"
-    "css-vendor/highlight-dark.min.css|@highlightjs/cdn-assets@11.9.0|styles/github-dark.min.css"
-    "css-vendor/github-markdown.css|github-markdown-css@5.9.0|github-markdown.css"
-)
-for font in AMS-Regular Caligraphic-Bold Caligraphic-Regular Fraktur-Bold Fraktur-Regular \
-            Main-Bold Main-BoldItalic Main-Italic Main-Regular Math-BoldItalic Math-Italic \
-            SansSerif-Bold SansSerif-Italic SansSerif-Regular Script-Regular \
-            Size1-Regular Size2-Regular Size3-Regular Size4-Regular Typewriter-Regular; do
-    FILES+=("css-vendor/fonts/KaTeX_$font.woff2|$KATEX|dist/fonts/KaTeX_$font.woff2")
-done
+mapfile -t FILES < <(grep -Ev '^[[:space:]]*(#|$)' "$LIST")
 
 if [[ ! -f "$SUMS" ]]; then
     echo "Missing checksum list: $SUMS" >&2

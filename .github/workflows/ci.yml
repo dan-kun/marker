@@ -13,6 +13,23 @@ jobs:
       - name: Ruff
         run: pipx run ruff==0.15.8 check .
 
+  typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install PyGObject
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-gi python3-gi-cairo python3-venv
+      - name: Pyright
+        run: |
+          /usr/bin/python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install pyright==1.1.414
+          # --no-deps: the stubs depend on PyGObject, which apt already provides
+          .venv/bin/pip install --no-deps --config-settings=config=Gtk4,Gdk4,GtkSource5 \
+            pygobject-stubs==2.20.0
+          .venv/bin/pyright --pythonpath .venv/bin/python
+
   test:
     runs-on: ubuntu-24.04
     steps:

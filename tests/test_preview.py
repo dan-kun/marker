@@ -235,3 +235,31 @@ def test_in_document_links_scroll_to_the_heading(preview):
     js(preview, "document.querySelector('#content a').click(); return true")
     assert wait_for(lambda: js(preview, "return document.documentElement.scrollTop") > 1000)
     assert preview.get_webview().get_uri().split("#")[0] == uri.split("#")[0]
+
+
+def test_scroll_follows_source_lines_not_percentages(preview):
+    """A tall block (image, diagram) early in the document must not throw
+    the two panes out of step."""
+    lines = ["intro", "", '<div style="height:4000px">tall</div>', ""]
+    lines += [line for i in range(40) for line in (f"paragraph {i}", "")]
+    target_line = lines.index("paragraph 20")
+    render(preview, "\n".join(lines))
+    preview.scroll_to_line(target_line, 0.5)
+    offset = """const el = [...document.querySelectorAll('#content p')]
+        .find(p => p.textContent === 'paragraph 20'); return el.getBoundingClientRect().top;"""
+    assert wait_for(lambda: abs(js(preview, offset)) < 2)
+    # the ends of the document still line up
+    preview.scroll_to_line(0, 0.0)
+    assert wait_for(lambda: js(preview, "return document.documentElement.scrollTop") == 0)
+    preview.scroll_to_line(target_line, 1.0)
+    assert wait_for(lambda: abs(js(preview, "return getScrollPercent()") - 1) < 0.01)
+
+
+def test_double_click_in_the_preview_reports_the_source_line(preview, window):
+    window.editor.set_text("one\n\ntwo\n\nthree\n")
+    assert wait_for(lambda: content_text(preview).endswith("three"))
+    js(preview, """const p = [...document.querySelectorAll('#content p')]
+            .find(p => p.textContent === 'three');
+        p.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true;""")
+    assert wait_for(lambda: window.editor.get_cursor_position() == (5, 1))
+    window.editor.get_buffer().set_modified(False)

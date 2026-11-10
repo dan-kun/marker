@@ -122,6 +122,17 @@
       });
     });
 
+    // Source lines: each block remembers which editor lines it came from,
+    // so scrolling can follow the text instead of a percentage.
+    md.core.ruler.push('source_lines', (state) => {
+      for (const token of state.tokens) {
+        if (token.map && token.nesting !== -1 && token.type !== 'fence') {
+          token.attrSet('data-line', String(token.map[0]));
+          token.attrSet('data-line-end', String(token.map[1]));
+        }
+      }
+    });
+
     // Task lists: "- [ ] todo" and "- [x] done" become read-only checkboxes.
     md.core.ruler.push('task_lists', (state) => {
       const tokens = state.tokens;
@@ -239,8 +250,9 @@
       const emptyState = document.getElementById('empty-state');
       const content = document.getElementById('content');
       if (docId === undefined || docId === null) docId = _docId;
+      // a percentage, or [line, percent] to follow the editor's top line
       let scrollTarget = null;
-      if (typeof scrollPercent === 'number') scrollTarget = scrollPercent;
+      if (typeof scrollPercent === 'number' || Array.isArray(scrollPercent)) scrollTarget = scrollPercent;
       else if (_scrollByDoc.has(docId)) scrollTarget = _scrollByDoc.get(docId);
       else if (docId !== _docId) scrollTarget = 0;
 
@@ -296,7 +308,8 @@
       if (generation !== _renderGeneration) return;
       _docId = docId;
       content.replaceChildren(...fragment.childNodes);
-      if (scrollTarget !== null) setScrollPercent(scrollTarget);
+      _lineMapDirty = true;
+      if (scrollTarget !== null) applyScroll(scrollTarget);
     }
 
     // ── Scroll position ────────────────────────────────────────────────────
@@ -311,6 +324,69 @@
       el.scrollTop = pct * (el.scrollHeight - el.clientHeight);
       if (_docId !== null) _scrollByDoc.set(_docId, pct);
     }
+
+    function applyScroll(target) {
+      if (Array.isArray(target)) scrollToLine(target[0], target[1]);
+      else setScrollPercent(target);
+    }
+
+    // ── Line-based scroll sync ─────────────────────────────────────────────
+    // _lineMap holds [source line, pixel offset] for every block, in order.
+    // It is rebuilt lazily after anything that can move blocks around.
+    let _lineMap = [];
+    let _lineMapEnd = 0;       // source line just past the last block
+    let _lineMapDirty = true;
+
+    function buildLineMap() {
+      _lineMap = [];
+      _lineMapEnd = 0;
+      for (const el of document.querySelectorAll('#content [data-line]')) {
+        const line = Number(el.dataset.line);
+        if (_lineMap.length === 0 || line > _lineMap[_lineMap.length - 1][0]) {
+          _lineMap.push([line, el.getBoundingClientRect().top + window.scrollY]);
+        }
+        _lineMapEnd = Math.max(_lineMapEnd, Number(el.dataset.lineEnd));
+      }
+      _lineMapDirty = false;
+    }
+
+    // Put source `line` (may be fractional) at the top of the page.
+    // `percent` is the editor's overall position, used at the very top and
+    // bottom so both panes reach their ends together.
+    function scrollToLine(line, percent) {
+      const el = document.documentElement;
+      const max = el.scrollHeight - el.clientHeight;
+      if (_lineMapDirty) buildLineMap();
+      let top;
+      if (percent <= 0.001) top = 0;
+      else if (percent >= 0.999) top = max;
+      else if (_lineMap.length === 0) top = percent * max;
+      else {
+        let lo = 0, hi = _lineMap.length - 1, i = -1;
+        while (lo <= hi) {  // last block starting at or before `line`
+          const mid = (lo + hi) >> 1;
+          if (_lineMap[mid][0] <= line) { i = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const [line0, top0] = i >= 0 ? _lineMap[i] : [0, 0];
+        const [line1, top1] = i + 1 < _lineMap.length
+          ? _lineMap[i + 1] : [Math.max(_lineMapEnd, line0 + 1), el.scrollHeight];
+        const within = Math.min(1, Math.max(0, (line - line0) / Math.max(1, line1 - line0)));
+        top = top0 + (top1 - top0) * within;
+      }
+      el.scrollTop = Math.max(0, Math.min(max, top));
+      if (_docId !== null) _scrollByDoc.set(_docId, max > 0 ? el.scrollTop / max : 0);
+    }
+
+    window.addEventListener('resize', () => { _lineMapDirty = true; });
+    document.addEventListener('load', () => { _lineMapDirty = true; }, true);  // images
+
+    // Double-click a block to jump to its line in the editor.
+    document.addEventListener('dblclick', (event) => {
+      const block = event.target.closest && event.target.closest('#content [data-line]');
+      const handler = window.webkit && window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.marker;
+      if (block && handler) handler.postMessage(Number(block.dataset.line));
+    });
 
     function forgetDocument(docId) {
       _scrollByDoc.delete(docId);

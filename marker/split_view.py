@@ -117,7 +117,7 @@ class SplitView(Gtk.Paned):
     def _sync_scroll(self):
         self._scroll_source = 0
         if self._preview is not None:
-            self._preview.scroll_to_fraction(self._editor_scroll_fraction())
+            self._preview.scroll_to_line(self._editor.get_top_line(), self._editor_scroll_fraction())
         return GLib.SOURCE_REMOVE
 
     # ── View mode ──────────────────────────────────────────────────────────
@@ -134,7 +134,9 @@ class SplitView(Gtk.Paned):
             self._preview_is_stale = False
             # Split view follows the editor; preview-only returns to where
             # the reader left this document.
-            scroll = self._editor_scroll_fraction() if self._mode == "split" else None
+            scroll = None
+            if self._mode == "split":
+                scroll = (self._editor.get_top_line(), self._editor_scroll_fraction())
             self._preview.show_document(
                 self.doc_id, self._editor.get_text(), self._base_dir, scroll
             )

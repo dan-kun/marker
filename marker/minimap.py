@@ -185,7 +185,7 @@ class Minimap(Gtk.DrawingArea):
         return surface
 
     def _on_draw(self, area, cr, width, height):
-        if not self._lines:
+        if not self._lines or width <= 0 or height <= 0:
             return
         cr.set_source_surface(self._silhouette(width, height), 0, 0)
         cr.paint()

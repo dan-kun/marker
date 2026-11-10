@@ -1,0 +1,35 @@
+# Preview libraries, one file per line:
+#   destination (relative to marker/data/web) | npm package@version | path inside the package
+# Read by scripts/fetch-deps.sh and scripts/flatpak-sources.py. After changing a
+# version, update scripts/vendor.sha256 and run scripts/flatpak-sources.py.
+js/purify.min.js|dompurify@3.2.7|dist/purify.min.js
+js/markdown-it.min.js|markdown-it@14.1.0|dist/markdown-it.min.js
+js/markdown-it-footnote.min.js|markdown-it-footnote@3.0.3|dist/markdown-it-footnote.min.js
+js/katex.min.js|katex@0.16.11|dist/katex.min.js
+js/auto-render.min.js|katex@0.16.11|dist/contrib/auto-render.min.js
+js/highlight.min.js|@highlightjs/cdn-assets@11.9.0|highlight.min.js
+js/mermaid.min.js|mermaid@11.12.0|dist/mermaid.min.js
+css-vendor/katex.min.css|katex@0.16.11|dist/katex.min.css
+css-vendor/highlight-light.min.css|@highlightjs/cdn-assets@11.9.0|styles/github.min.css
+css-vendor/highlight-dark.min.css|@highlightjs/cdn-assets@11.9.0|styles/github-dark.min.css
+css-vendor/github-markdown.css|github-markdown-css@5.9.0|github-markdown.css
+css-vendor/fonts/KaTeX_AMS-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_AMS-Regular.woff2
+css-vendor/fonts/KaTeX_Caligraphic-Bold.woff2|katex@0.16.11|dist/fonts/KaTeX_Caligraphic-Bold.woff2
+css-vendor/fonts/KaTeX_Caligraphic-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Caligraphic-Regular.woff2
+css-vendor/fonts/KaTeX_Fraktur-Bold.woff2|katex@0.16.11|dist/fonts/KaTeX_Fraktur-Bold.woff2
+css-vendor/fonts/KaTeX_Fraktur-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Fraktur-Regular.woff2
+css-vendor/fonts/KaTeX_Main-Bold.woff2|katex@0.16.11|dist/fonts/KaTeX_Main-Bold.woff2
+css-vendor/fonts/KaTeX_Main-BoldItalic.woff2|katex@0.16.11|dist/fonts/KaTeX_Main-BoldItalic.woff2
+css-vendor/fonts/KaTeX_Main-Italic.woff2|katex@0.16.11|dist/fonts/KaTeX_Main-Italic.woff2
+css-vendor/fonts/KaTeX_Main-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Main-Regular.woff2
+css-vendor/fonts/KaTeX_Math-BoldItalic.woff2|katex@0.16.11|dist/fonts/KaTeX_Math-BoldItalic.woff2
+css-vendor/fonts/KaTeX_Math-Italic.woff2|katex@0.16.11|dist/fonts/KaTeX_Math-Italic.woff2
+css-vendor/fonts/KaTeX_SansSerif-Bold.woff2|katex@0.16.11|dist/fonts/KaTeX_SansSerif-Bold.woff2
+css-vendor/fonts/KaTeX_SansSerif-Italic.woff2|katex@0.16.11|dist/fonts/KaTeX_SansSerif-Italic.woff2
+css-vendor/fonts/KaTeX_SansSerif-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_SansSerif-Regular.woff2
+css-vendor/fonts/KaTeX_Script-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Script-Regular.woff2
+css-vendor/fonts/KaTeX_Size1-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Size1-Regular.woff2
+css-vendor/fonts/KaTeX_Size2-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Size2-Regular.woff2
+css-vendor/fonts/KaTeX_Size3-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Size3-Regular.woff2
+css-vendor/fonts/KaTeX_Size4-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Size4-Regular.woff2
+css-vendor/fonts/KaTeX_Typewriter-Regular.woff2|katex@0.16.11|dist/fonts/KaTeX_Typewriter-Regular.woff2

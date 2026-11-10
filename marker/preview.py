@@ -31,6 +31,7 @@ function render(text) {
 }
 function setTheme(isDark) {}
 function setScrollPercent(pct) {}
+function scrollToLine(line, pct) {}
 function forgetDocument(id) {}
 </script>
 </body></html>"""
@@ -54,6 +55,8 @@ class MarkdownPreview(Gtk.Box):
     __gsignals__ = {
         # A link to a local text file was clicked
         "open-file": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        # A block was double-clicked: its 0-based line in the source
+        "line-activated": (GObject.SignalFlags.RUN_LAST, None, (int,)),
     }
 
     def __init__(self):
@@ -62,7 +65,8 @@ class MarkdownPreview(Gtk.Box):
         self._ready = False
         self._disposed = False
         self._text: str | None = None
-        self._scroll: float | None = None  # scroll fraction to apply with the next render
+        # Scroll to apply with the next render: a fraction, or (line, fraction)
+        self._scroll: float | tuple[float, float] | None = None
         self._doc_id = 0  # which document is showing; the page keeps a scroll position per id
         self._base_uri: str | None = None
         self._page_uri = _preview_uri()
@@ -89,6 +93,15 @@ class MarkdownPreview(Gtk.Box):
         settings.set_javascript_can_open_windows_automatically(False)
         settings.set_enable_developer_extras(False)
 
+        # The page reports double-clicked blocks through this message handler.
+        # It only carries a line number; documents cannot run scripts anyway.
+        content_manager = self._webview.get_user_content_manager()
+        content_manager.register_script_message_handler("marker", None)
+        self._content_manager = content_manager
+        self._message_handler = content_manager.connect(
+            "script-message-received::marker", self._on_script_message
+        )
+
         self._webview_handlers = [
             self._webview.connect("load-changed", self._on_load_changed),
             self._webview.connect("decide-policy", self._on_decide_policy),
@@ -108,6 +121,7 @@ class MarkdownPreview(Gtk.Box):
         for handler in self._webview_handlers:
             self._webview.disconnect(handler)
         self._webview_handlers = []
+        self._content_manager.disconnect(self._message_handler)
         self._webview.terminate_web_process()
 
     # ── WebView events ─────────────────────────────────────────────────────
@@ -120,6 +134,10 @@ class MarkdownPreview(Gtk.Box):
             self._js_set_theme()
             if self._text is not None:
                 self._js_render()
+
+    def _on_script_message(self, content_manager, value):
+        if value.is_number():
+            self.emit("line-activated", max(0, value.to_int32()))
 
     def _on_web_process_terminated(self, webview, reason):
         if not self._disposed:
@@ -150,7 +168,8 @@ class MarkdownPreview(Gtk.Box):
             return
         if scheme not in _EXTERNAL_SCHEMES:
             return
-        window = self.get_root()
+        root = self.get_root()
+        window = root if isinstance(root, Gtk.Window) else None
         if hasattr(Gtk, "UriLauncher"):  # GTK ≥ 4.10
             Gtk.UriLauncher.new(uri).launch(window, None, None, None)
         else:
@@ -178,8 +197,9 @@ class MarkdownPreview(Gtk.Box):
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def render(self, text: str, scroll: float | None = None):
-        """Render text. scroll (0..1) positions the page once it is rendered;
+    def render(self, text: str, scroll: float | tuple[float, float] | None = None):
+        """Render text. scroll positions the page once it is rendered: a
+        fraction (0..1), or (source line, fraction) to follow the editor.
         None keeps the current position."""
         self._text = text
         if scroll is not None:
@@ -195,7 +215,7 @@ class MarkdownPreview(Gtk.Box):
                 self._js_render()
 
     def show_document(self, doc_id: int, text: str, directory: str | None,
-                      scroll: float | None = None):
+                      scroll: float | tuple[float, float] | None = None):
         """Switch the preview to another document in a single render.
 
         With scroll=None the page returns to where this document (doc_id)
@@ -211,6 +231,12 @@ class MarkdownPreview(Gtk.Box):
 
     def scroll_to_fraction(self, fraction: float):
         self._js(f"setScrollPercent({fraction:.4f})")
+
+    def scroll_to_line(self, line: float, fraction: float):
+        """Bring source `line` (0-based, may be fractional) to the top of the
+        page. fraction is the editor's overall position, so that both panes
+        reach the start and the end of the document together."""
+        self._js(f"scrollToLine({line:.3f}, {fraction:.4f})")
 
     def get_webview(self) -> WebKit.WebView:
         return self._webview

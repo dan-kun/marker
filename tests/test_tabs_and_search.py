@@ -153,14 +153,16 @@ def test_view_mode_buttons_follow_the_active_tab(window):
 
 def test_editor_scroll_is_mirrored_in_the_preview(window, monkeypatch):
     tab = window.tab_manager.active_tab
-    fractions = []
-    monkeypatch.setattr(window.preview, "scroll_to_fraction", fractions.append)
+    calls = []
+    monkeypatch.setattr(window.preview, "scroll_to_line", lambda *args: calls.append(args))
     tab.editor.set_text("line\n" * 2000)
     vadj = tab.editor.get_vadjustment()
     assert wait_for(lambda: vadj.get_upper() > vadj.get_page_size() * 2)
     vadj.set_value((vadj.get_upper() - vadj.get_page_size()) / 2)
-    assert wait_for(lambda: fractions)
-    assert abs(fractions[-1] - 0.5) < 0.05
+    assert wait_for(lambda: calls)
+    line, fraction = calls[-1]
+    assert abs(fraction - 0.5) < 0.05
+    assert 900 < line < 1100  # the editor's top line, about halfway down 2000 lines
 
 
 def test_minimap_viewport_matches_drawn_lines_for_short_documents(window):

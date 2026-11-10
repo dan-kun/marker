@@ -56,6 +56,33 @@ def parse_grep_output(data: bytes, limit: int = MAX_DIR_RESULTS) -> tuple[list[t
     return results, total
 
 
+class ResultRow(Gtk.ListBoxRow):
+    """One "Find in Folder" match: where it is and the matching line."""
+
+    def __init__(self, path: str, lineno: int, text: str, root: str):
+        super().__init__()
+        self.location = (path, lineno)  # lineno is 1-based, as grep reports it
+        self.set_tooltip_text(path)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        where = Gtk.Label(label=f"{os.path.relpath(path, root)}:{lineno}", xalign=0)
+        where.add_css_class("caption")
+        where.add_css_class("dim-label")
+        where.set_ellipsize(Pango.EllipsizeMode.START)
+        box.append(where)
+
+        text_label = Gtk.Label(label=text[:200], xalign=0)
+        text_label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(text_label)
+
+        self.set_child(box)
+
+
 class SearchBar(Gtk.Box):
     """Combined in-file search/replace + directory search bar."""
 
@@ -66,17 +93,17 @@ class SearchBar(Gtk.Box):
 
     def __init__(self, editor, root_provider: Callable[[], str | None]):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self._editor = None
-        self._buffer = None
         self._root_provider = root_provider
-        self._search_ctx: GtkSource.SearchContext | None = None
-        self._count_handler = 0
         self._search_settings = GtkSource.SearchSettings()
         self._search_settings.set_wrap_around(True)
         self._grep_cancellable: Gio.Cancellable | None = None
 
+        self._editor = editor
+        self._buffer = editor.get_buffer()
+        self._search_ctx, self._count_handler = self._new_context()
+        self._search_ctx.set_highlight(False)
+
         self._build_ui()
-        self.set_editor(editor)
         self.set_visible(False)
 
     def _build_ui(self):
@@ -227,21 +254,20 @@ class SearchBar(Gtk.Box):
 
     def set_editor(self, editor):
         """Reconnect the search bar to a new editor (called on tab switch)."""
-        if self._search_ctx is not None:
-            self._search_ctx.disconnect(self._count_handler)
-            self._search_ctx.set_highlight(False)
+        self._search_ctx.disconnect(self._count_handler)
+        self._search_ctx.set_highlight(False)
         self._editor = editor
         self._buffer = editor.get_buffer()
-        self._search_ctx = GtkSource.SearchContext(
-            buffer=self._buffer,
-            settings=self._search_settings,
-        )
-        self._search_ctx.set_highlight(self.get_visible())
-        # The count is computed asynchronously; -1 until the scan finishes.
-        self._count_handler = self._search_ctx.connect(
-            "notify::occurrences-count", lambda *_: self._update_match_count()
-        )
+        self._search_ctx, self._count_handler = self._new_context()
         self._update_match_count()
+
+    def _new_context(self) -> tuple[GtkSource.SearchContext, int]:
+        """A search context on the current buffer and its count handler."""
+        context = GtkSource.SearchContext(buffer=self._buffer, settings=self._search_settings)
+        context.set_highlight(self.get_visible())
+        # The count is computed asynchronously; -1 until the scan finishes.
+        handler = context.connect("notify::occurrences-count", lambda *_: self._update_match_count())
+        return context, handler
 
     def show_search(self):
         self._show_inline(replace=False)
@@ -257,9 +283,9 @@ class SearchBar(Gtk.Box):
         self._search_ctx.set_highlight(True)
 
         # Seed the query with a single-line selection, like most editors
-        if self._buffer.get_has_selection():
-            start, end = self._buffer.get_selection_bounds()
-            selected = self._buffer.get_text(start, end, True)
+        selection = self._editor.get_selection()
+        if selection:
+            selected = self._buffer.get_text(*selection, True)
             if selected and "\n" not in selected:
                 self._search_entry.set_text(selected)
         self._search_entry.grab_focus()
@@ -322,11 +348,10 @@ class SearchBar(Gtk.Box):
     def _search_origin(self, forward: bool):
         """Search from the end of the current selection when going forward,
         so that repeated "next" moves past the match that is selected."""
-        buf = self._buffer
-        if buf.get_has_selection():
-            start, end = buf.get_selection_bounds()
-            return end if forward else start
-        return buf.get_iter_at_mark(buf.get_insert())
+        selection = self._editor.get_selection()
+        if selection:
+            return selection[1] if forward else selection[0]
+        return self._buffer.get_iter_at_mark(self._buffer.get_insert())
 
     def _select_match(self, start, end):
         self._buffer.select_range(start, end)
@@ -350,10 +375,7 @@ class SearchBar(Gtk.Box):
         """Replace the selected match (or the next one), then select the next."""
         if not self._has_query():
             return
-        buf = self._buffer
-        origin = buf.get_selection_bounds()[0] if buf.get_has_selection() else \
-            buf.get_iter_at_mark(buf.get_insert())
-        found, start, end, _ = self._search_ctx.forward(origin)
+        found, start, end, _ = self._search_ctx.forward(self._search_origin(forward=False))
         if not found:
             return
         replacement = self._replace_entry.get_text()
@@ -443,31 +465,9 @@ class SearchBar(Gtk.Box):
         self._dir_results.append(row)
 
     def _add_dir_result(self, path: str, lineno: int, text: str, root: str):
-        row = Gtk.ListBoxRow()
-        row.location = (path, lineno)  # type: ignore[attr-defined]
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.set_margin_top(4)
-        box.set_margin_bottom(4)
-
-        location = Gtk.Label(label=f"{os.path.relpath(path, root)}:{lineno}", xalign=0)
-        location.add_css_class("caption")
-        location.add_css_class("dim-label")
-        location.set_ellipsize(Pango.EllipsizeMode.START)
-        box.append(location)
-
-        text_label = Gtk.Label(label=text[:200], xalign=0)
-        text_label.set_ellipsize(Pango.EllipsizeMode.END)
-        box.append(text_label)
-
-        row.set_child(box)
-        row.set_tooltip_text(path)
-        self._dir_results.append(row)
+        self._dir_results.append(ResultRow(path, lineno, text, root))
 
     def _on_dir_result_activated(self, listbox, row):
-        location = getattr(row, "location", None)
-        if location is not None:
-            path, lineno = location
+        if isinstance(row, ResultRow):
+            path, lineno = row.location
             self.emit("open-location", path, lineno - 1)

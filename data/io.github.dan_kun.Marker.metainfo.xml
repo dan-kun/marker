@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dan_kun.Marker</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Marker</name>
+  <summary>Write Markdown with a live preview</summary>
+  <description>
+    <p>
+      Marker is a Markdown and plain-text editor with a preview that updates as you type.
+    </p>
+    <ul>
+      <li>Syntax highlighting, KaTeX math, Mermaid diagrams, footnotes and task lists</li>
+      <li>Tabs, a file explorer, recent files and a document minimap</li>
+      <li>Find and replace with regular expressions, and search across a folder</li>
+      <li>Keeps each file's encoding and line endings, and saves atomically</li>
+      <li>Follows changes made by other programs and remembers your session</li>
+    </ul>
+    <p>
+      Documents are rendered in a sandboxed view: HTML in a Markdown file cannot run scripts or
+      read other files.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.dan_kun.Marker.desktop</launchable>
+  <url type="homepage">https://github.com/dan-kun/marker</url>
+  <url type="bugtracker">https://github.com/dan-kun/marker/issues</url>
+  <url type="vcs-browser">https://github.com/dan-kun/marker</url>
+
+  <developer id="io.github.dan_kun">
+    <name>Daniel</name>
+  </developer>
+
+  <categories>
+    <category>Utility</category>
+    <category>TextEditor</category>
+  </categories>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-11-10">
+      <description>
+        <p>First packaged release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

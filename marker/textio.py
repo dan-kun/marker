@@ -83,26 +83,46 @@ def _default_file_mode() -> int:
     return 0o666 & ~umask
 
 
+def _must_keep_identity(target: str) -> bool:
+    """True when the file has other hard links or belongs to another user."""
+    try:
+        info = os.stat(target)
+    except OSError:
+        return False
+    return info.st_nlink > 1 or info.st_uid != os.geteuid()
+
+
+def _write_in_place(target: str, data: bytes) -> int:
+    with open(target, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    return os.stat(target).st_mtime_ns
+
+
 def write_text_file(path: str, text: str, encoding: str = "utf-8", newline: str = "\n") -> int:
     """Atomically write text to path and return the new mtime (ns).
 
     The data goes to a temporary file in the same directory, which then
     replaces the target, so a failed write never truncates the original.
-    Raises UnicodeEncodeError if text cannot be represented in encoding.
+    Replacing would break a file's other hard links and hand a file owned
+    by someone else to the current user, so those are rewritten in place
+    instead (as GIO does). Raises UnicodeEncodeError if text cannot be
+    represented in encoding.
     """
     data = text.replace("\n", newline).encode(encoding)
     target = os.path.realpath(path)  # replace a symlink's target, not the link
     directory = os.path.dirname(target) or "."
 
+    if _must_keep_identity(target):
+        return _write_in_place(target, data)
     try:
         fd, tmp_path = tempfile.mkstemp(
             dir=directory, prefix=f".{os.path.basename(target)}.", suffix=".tmp"
         )
     except PermissionError:
         # Directory is read-only but the file itself may be writable.
-        with open(target, "wb") as f:
-            f.write(data)
-        return os.stat(target).st_mtime_ns
+        return _write_in_place(target, data)
 
     try:
         with os.fdopen(fd, "wb") as f:

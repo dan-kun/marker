@@ -95,3 +95,13 @@ def test_write_through_symlink_updates_target(tmp_path):
     write_text_file(str(link), "new")
     assert link.is_symlink()
     assert target.read_text() == "new"
+
+
+def test_write_keeps_hard_links_pointing_at_the_same_file(tmp_path):
+    original = tmp_path / "a.md"
+    original.write_text("old")
+    other_name = tmp_path / "b.md"
+    os.link(original, other_name)
+    write_text_file(str(original), "new")
+    assert other_name.read_text() == "new"
+    assert os.stat(original).st_ino == os.stat(other_name).st_ino

@@ -1,0 +1,20 @@
+# Builds the Flatpak bundle. Run it by hand from the Actions tab: it is not
+# part of the checks on every pull request.
+name: Flatpak
+
+on:
+  workflow_dispatch:
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: marker.flatpak
+          manifest-path: flatpak/io.github.dan_kun.Marker.yml
+          cache-key: flatpak-builder-${{ github.sha }}

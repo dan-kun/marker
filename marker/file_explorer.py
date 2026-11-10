@@ -35,6 +35,45 @@ def list_entries(path: str) -> list[tuple[str, str, bool]]:
     return entries
 
 
+class FileRow(Gtk.ListBoxRow):
+    """One file or folder in the tree."""
+
+    def __init__(self, path: str, name: str, depth: int, is_dir: bool):
+        super().__init__()
+        self.path = path
+        self.is_dir = is_dir
+        self.depth = depth
+        self._arrow: Gtk.Image | None = None
+        self.set_tooltip_text(path)
+
+        box = Gtk.Box(spacing=6)
+        box.set_margin_start(8 + depth * 16)
+        box.set_margin_end(8)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        icon = Gtk.Image.new_from_icon_name("folder-symbolic" if is_dir else icon_name(name))
+        icon.set_pixel_size(16)
+        box.append(icon)
+
+        label = Gtk.Label(label=name, xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_hexpand(True)
+        box.append(label)
+
+        if is_dir:
+            self._arrow = Gtk.Image.new_from_icon_name("go-next-symbolic")
+            self._arrow.set_pixel_size(12)
+            self._arrow.add_css_class("dim-label")
+            box.append(self._arrow)
+
+        self.set_child(box)
+
+    def set_expanded(self, expanded: bool):
+        if self._arrow is not None:
+            self._arrow.set_from_icon_name("go-down-symbolic" if expanded else "go-next-symbolic")
+
+
 class FileExplorer(Gtk.Box):
     """Sidebar widget showing a file tree for a directory."""
 
@@ -142,78 +181,43 @@ class FileExplorer(Gtk.Box):
     def _insert_children(self, folder: str, index: int, depth: int) -> int:
         """Insert rows for folder's entries at index; returns the next index."""
         for name, path, is_dir in list_entries(folder):
-            row = self._make_row(path, name, depth, is_dir)
+            row = FileRow(path, name, depth, is_dir)
             self._list_box.insert(row, index)
             index += 1
             if is_dir and path in self._expanded:
-                self._set_arrow(row, expanded=True)
+                row.set_expanded(True)
                 index = self._insert_children(path, index, depth + 1)
         return index
 
-    def _make_row(self, path: str, name: str, depth: int, is_dir: bool) -> Gtk.ListBoxRow:
-        row = Gtk.ListBoxRow()
-        row.path = path  # type: ignore[attr-defined]
-        row.is_dir = is_dir  # type: ignore[attr-defined]
-        row.depth = depth  # type: ignore[attr-defined]
-        row.set_tooltip_text(path)
-
-        box = Gtk.Box(spacing=6)
-        box.set_margin_start(8 + depth * 16)
-        box.set_margin_end(8)
-        box.set_margin_top(4)
-        box.set_margin_bottom(4)
-
-        icon = Gtk.Image.new_from_icon_name("folder-symbolic" if is_dir else icon_name(name))
-        icon.set_pixel_size(16)
-        box.append(icon)
-
-        label = Gtk.Label(label=name, xalign=0)
-        label.set_ellipsize(Pango.EllipsizeMode.END)
-        label.set_hexpand(True)
-        box.append(label)
-
-        if is_dir:
-            arrow = Gtk.Image.new_from_icon_name("go-next-symbolic")
-            arrow.set_pixel_size(12)
-            arrow.add_css_class("dim-label")
-            row.arrow = arrow  # type: ignore[attr-defined]
-            box.append(arrow)
-
-        row.set_child(box)
-        return row
-
-    @staticmethod
-    def _set_arrow(row, expanded: bool):
-        row.arrow.set_from_icon_name("go-down-symbolic" if expanded else "go-next-symbolic")
-
     def _on_row_activated(self, listbox, row):
-        if row is None:
+        if not isinstance(row, FileRow):
             return
         if row.is_dir:
             self._toggle_dir(row)
         else:
             self.emit("file-activated", row.path)
 
-    def _toggle_dir(self, dir_row):
+    def _toggle_dir(self, dir_row: FileRow):
         if dir_row.path in self._expanded:
             self._collapse_dir(dir_row)
         else:
             self._expand_dir(dir_row)
         self._sync_monitors()
 
-    def _expand_dir(self, dir_row):
+    def _expand_dir(self, dir_row: FileRow):
         self._expanded.add(dir_row.path)
-        self._set_arrow(dir_row, expanded=True)
+        dir_row.set_expanded(True)
         self._insert_children(dir_row.path, dir_row.get_index() + 1, dir_row.depth + 1)
 
-    def _collapse_dir(self, dir_row):
-        self._set_arrow(dir_row, expanded=False)
+    def _collapse_dir(self, dir_row: FileRow):
+        dir_row.set_expanded(False)
         prefix = dir_row.path + os.sep
         self._expanded = {p for p in self._expanded if p != dir_row.path and not p.startswith(prefix)}
 
         # Children follow their folder and are indented deeper
         index = dir_row.get_index() + 1
-        while (row := self._list_box.get_row_at_index(index)) is not None and row.depth > dir_row.depth:
+        while isinstance(row := self._list_box.get_row_at_index(index), FileRow) \
+                and row.depth > dir_row.depth:
             self._list_box.remove(row)
 
     def _on_open_folder_clicked(self, btn):

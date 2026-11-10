@@ -125,7 +125,11 @@ class FileManager(GObject.Object):
     # ── Loading ────────────────────────────────────────────────────────────
 
     def new_file(self):
-        self.confirm_discard(lambda ok: ok and self._reset())
+        def proceed(ok: bool):
+            if ok:
+                self._reset()
+
+        self.confirm_discard(proceed)
 
     def _reset(self):
         self._editor.set_text("")

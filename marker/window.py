@@ -268,8 +268,15 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         action.connect("change-state", change_state)
         self.add_action(action)
+        self._stateful[name] = action
+
+    def _state(self, name: str):
+        """Current value of one of this window's stateful actions."""
+        state = self._stateful[name].get_state()
+        return state.unpack() if state is not None else None
 
     def _setup_actions(self):
+        self._stateful: dict[str, Gio.SimpleAction] = {}
         simple = {
             "new-file": self._action_new_file,
             "open-file": self._action_open_file,
@@ -317,6 +324,8 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _setup_shortcuts(self):
         app = self.get_application()
+        if app is None:
+            return
         for action, accels in iter_accels():
             app.set_accels_for_action(action, accels)
 
@@ -354,7 +363,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         ]
 
         # Sync UI from the new active tab's state
-        self.lookup_action("view-mode").set_state(GLib.Variant("s", tab.split_view.get_mode()))
+        self._stateful["view-mode"].set_state(GLib.Variant("s", tab.split_view.get_mode()))
         self.search_bar.set_editor(ed)
         self._minimap.set_editor(ed)
 
@@ -423,7 +432,7 @@ class MarkerWindow(Adw.ApplicationWindow):
             self.split_view.set_mode(mode)
 
     def _action_toggle_split(self, *_):
-        current = self.lookup_action("view-mode").get_state().get_string()
+        current = self._state("view-mode")
         self._set_view_mode("editor" if current == "split" else "split")
 
     def _on_show_sidebar_changed(self, visible: bool):
@@ -456,9 +465,11 @@ class MarkerWindow(Adw.ApplicationWindow):
         folder = self.file_explorer.root_path
         if fm is not None and fm.current_path:
             folder = os.path.dirname(fm.current_path)
-        dialogs.choose_files_to_open(
-            self, lambda paths: [self.open_file(p) for p in paths], folder=folder
-        )
+        def open_all(paths: list[str]):
+            for path in paths:
+                self.open_file(path)
+
+        dialogs.choose_files_to_open(self, open_all, folder=folder)
 
     def _action_fullscreen(self, *_):
         if self.is_fullscreen():
@@ -586,10 +597,10 @@ class MarkerWindow(Adw.ApplicationWindow):
                 state["width"], state["height"] = width, height
         state.update({
             "maximized": self.is_maximized(),
-            "sidebar": self.lookup_action("show-sidebar").get_state().get_boolean(),
+            "sidebar": self._state("show-sidebar"),
             "sidebar-width": self._sidebar_width,
-            "minimap": self.lookup_action("show-minimap").get_state().get_boolean(),
-            "view-mode": self.lookup_action("view-mode").get_state().get_string(),
+            "minimap": self._state("show-minimap"),
+            "view-mode": self._state("view-mode"),
             "zoom": self.tab_manager.zoom,
             "folder": self.file_explorer.root_path,
             "files": files,

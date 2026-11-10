@@ -7,3 +7,4 @@ marker/data/web/css-vendor/
 *.egg-info/
 dist/
 build/
+.venv/
