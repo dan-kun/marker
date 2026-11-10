@@ -1,6 +1,5 @@
 """Sidebar 'RECENT' collapsible section widget."""
 
-import os
 
 import gi
 
@@ -9,12 +8,13 @@ from gi.repository import GLib, GObject, Gtk, Pango
 
 from .filetypes import icon_name
 from .recents import SIDEBAR_LIMIT, RecentFilesManager, format_relative_time
+from .titles import short_labels
 
 
 class RecentRow(Gtk.ListBoxRow):
     """A recently opened file with how long ago it was opened."""
 
-    def __init__(self, path: str, opened_at: float):
+    def __init__(self, path: str, opened_at: float, name: str):
         super().__init__()
         self.path = path
         self.opened_at = opened_at
@@ -30,8 +30,8 @@ class RecentRow(Gtk.ListBoxRow):
         icon.set_pixel_size(16)
         box.append(icon)
 
-        label = Gtk.Label(label=os.path.basename(path), xalign=0)
-        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label = Gtk.Label(label=name, xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         label.set_hexpand(True)
         box.append(label)
 
@@ -107,8 +107,10 @@ class RecentsSection(Gtk.Box):
 
         recents = self._manager.get_recents(limit=SIDEBAR_LIMIT)
         self.set_visible(bool(recents))
+        names = short_labels([entry["path"] for entry in recents])
         for entry in recents:
-            self._list_box.append(RecentRow(entry["path"], entry["opened_at"]))
+            path = entry["path"]
+            self._list_box.append(RecentRow(path, entry["opened_at"], names[path]))
 
     def _update_times(self):
         index = 0

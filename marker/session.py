@@ -15,7 +15,7 @@ DEFAULTS = {
     "minimap": True,
     "view-mode": "split",
     "zoom": 1.0,
-    "folder": None,   # explorer root
+    "folders": [],    # folders shown in the sidebar
     "files": [],      # open documents, in tab order
     "active": 0,      # index into "files" of the selected tab
 }
@@ -32,9 +32,7 @@ def _valid(key: str, value) -> bool:
         return value in _VIEW_MODES
     if key == "zoom":
         return type(value) in (int, float) and 0.5 <= value <= 3.0
-    if key == "folder":
-        return value is None or isinstance(value, str)
-    if key == "files":
+    if key in ("folders", "files"):
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
     if key == "active":
         return type(value) is int and value >= 0
@@ -50,6 +48,8 @@ def load(path: str | None = None) -> dict:
     except (OSError, ValueError):
         return state
     if isinstance(stored, dict):
+        if "folders" not in stored and isinstance(stored.get("folder"), str):
+            stored["folders"] = [stored["folder"]]  # sessions saved before multi-folder support
         state.update({key: stored[key] for key in DEFAULTS if key in stored and _valid(key, stored[key])})
     return state
 

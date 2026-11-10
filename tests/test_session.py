@@ -55,7 +55,7 @@ def test_layout_and_documents_are_restored(app, tmp_path):
     first = MarkerWindow(application=app)
     first.present()
     iterate(0.2)
-    first.file_explorer.set_root(str(tmp_path))
+    first.file_explorer.set_roots([str(tmp_path)])
     first.open_file(str(a))
     first.open_file(str(gone))
     first.open_file(str(b))
@@ -77,7 +77,7 @@ def test_layout_and_documents_are_restored(app, tmp_path):
         assert not second.lookup_action("show-sidebar").get_state().get_boolean()
         assert not second._minimap.get_visible()
         assert second.tab_manager.zoom == 1.1
-        assert second.file_explorer.root_path == str(tmp_path)
+        assert second.file_explorer.roots == [str(tmp_path)]
         paths = [t.file_manager.current_path for t in second.tab_manager.tabs()]
         assert paths == [str(a), str(b)]  # the deleted file is skipped quietly
         assert second.file_manager.current_path == str(b)

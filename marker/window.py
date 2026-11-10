@@ -22,17 +22,10 @@ from .settings import Settings
 from .shortcuts import iter_accels
 from .split_view import MODES
 from .tab_view import TabManager
+from .titles import short_labels
 from .utils import Debouncer
 
 SIDEBAR_DEFAULT_WIDTH = 240
-
-
-def _is_within(path: str, folder: str) -> bool:
-    path, folder = os.path.realpath(path), os.path.realpath(folder)
-    try:
-        return os.path.commonpath([path, folder]) == folder
-    except ValueError:
-        return False
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -50,7 +43,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.recents_manager = RecentFilesManager()
         self.tab_manager = TabManager(self, self.recents_manager, self.settings)
         self.file_explorer = FileExplorer()
-        self.search_bar = SearchBar(self.editor, root_provider=lambda: self.file_explorer.root_path)
+        self.search_bar = SearchBar(self.editor, roots_provider=lambda: self.file_explorer.roots)
         self._minimap = Minimap()
 
         # One Gio.Menu shared by the hamburger menu and the menubar
@@ -58,6 +51,8 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         self._tab_handlers: list = []
         self._close_confirmed = False
+        self._restoring = False  # reopening the last session: keep its folders as saved
+        self._shown_in_explorer: str | None = None
         self._sidebar_width = self._session["sidebar-width"]
         self._word_count = Debouncer(200, self._update_word_count)
 
@@ -338,7 +333,6 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _connect_signals(self):
         self.tab_manager.connect("active-tab-changed", lambda *_: self._connect_active_tab())
-        self.tab_manager.connect("file-opened", self._on_file_opened)
         self.file_explorer.connect("file-activated", self._on_sidebar_file_activated)
         self._recents_section.connect("file-activated", self._on_sidebar_file_activated)
         self.search_bar.connect("open-location", self._on_open_location)
@@ -390,6 +384,8 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._status_encoding.set_text(f"{fm.encoding_label} · {fm.newline_label}")
         self._conflict_bar.set_visible(fm.changed_on_disk)
         self._update_save_label()
+        if (path or None) != self._shown_in_explorer:  # new tab, or saved under a new name
+            self._show_in_explorer(path or None)
 
     def _update_save_label(self):
         fm = self.file_manager
@@ -409,10 +405,14 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._update_save_label()
         return GLib.SOURCE_CONTINUE
 
-    def _on_file_opened(self, tab_manager, path):
-        root = self.file_explorer.root_path
-        if root is None or not _is_within(path, root):
-            self.file_explorer.set_root(os.path.dirname(path))
+    def _show_in_explorer(self, path: str | None):
+        """Select the document in the sidebar. With "follow open files" on,
+        a file outside every folder shown brings its own folder along."""
+        if path and self.settings["explorer-follow"] and not self._restoring \
+                and not self.file_explorer.shows(path):
+            self.file_explorer.add_root(os.path.dirname(path))
+        self.file_explorer.reveal(path)
+        self._shown_in_explorer = path
 
     def _on_sidebar_file_activated(self, widget, path):
         self.open_file(path)
@@ -462,7 +462,8 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _action_open_file(self, *_):
         fm = self.file_manager
-        folder = self.file_explorer.root_path
+        roots = self.file_explorer.roots
+        folder = roots[0] if roots else None
         if fm is not None and fm.current_path:
             folder = os.path.dirname(fm.current_path)
         def open_all(paths: list[str]):
@@ -490,8 +491,9 @@ class MarkerWindow(Adw.ApplicationWindow):
         menu = self._recents_menu
         menu.remove_all()
         files = Gio.Menu()
+        names = short_labels([entry["path"] for entry in recents])
         for entry in recents:
-            item = Gio.MenuItem.new(os.path.basename(entry["path"]), None)
+            item = Gio.MenuItem.new(names[entry["path"]], None)
             item.set_action_and_target_value("win.open-recent", GLib.Variant("s", entry["path"]))
             files.append_item(item)
         menu.append_section(None, files)
@@ -575,14 +577,17 @@ class MarkerWindow(Adw.ApplicationWindow):
         """Reopen the folder and files from the last run (when started
         without files on the command line)."""
         state = self._session
-        if state["folder"] and os.path.isdir(state["folder"]):
-            self.file_explorer.set_root(state["folder"])
-        tabs = [self.tab_manager.open_file(path) for path in state["files"] if os.path.isfile(path)]
-        # "active" indexes the saved list; files that vanished shift it
-        wanted = state["files"][state["active"]] if state["active"] < len(state["files"]) else None
-        for tab in tabs:
-            if tab is not None and tab.file_manager.current_path == wanted:
-                self.tab_manager.select(tab)
+        self._restoring = True
+        try:
+            self.file_explorer.set_roots(state["folders"])
+            tabs = [self.tab_manager.open_file(path) for path in state["files"] if os.path.isfile(path)]
+            # "active" indexes the saved list; files that vanished shift it
+            wanted = state["files"][state["active"]] if state["active"] < len(state["files"]) else None
+            for tab in tabs:
+                if tab is not None and tab.file_manager.current_path == wanted:
+                    self.tab_manager.select(tab)
+        finally:
+            self._restoring = False
 
     def _save_session(self):
         tabs = self.tab_manager.tabs()
@@ -602,7 +607,7 @@ class MarkerWindow(Adw.ApplicationWindow):
             "minimap": self._state("show-minimap"),
             "view-mode": self._state("view-mode"),
             "zoom": self.tab_manager.zoom,
-            "folder": self.file_explorer.root_path,
+            "folders": self.file_explorer.roots,
             "files": files,
             "active": files.index(active) if active in files else 0,
         })
@@ -622,11 +627,11 @@ class MarkerWindow(Adw.ApplicationWindow):
         return self.tab_manager.open_file(path)
 
     def open_path(self, path: str):
-        """Open something named on the command line: a folder becomes the
-        explorer's root, a file opens in a tab, and a file that does not
-        exist yet opens as a new document with that name."""
+        """Open something named on the command line: a folder is added to
+        the sidebar, a file opens in a tab, and a file that does not exist
+        yet opens as a new document with that name."""
         if os.path.isdir(path):
-            self.file_explorer.set_root(path)
+            self.file_explorer.add_root(path)
             self.change_action_state("show-sidebar", GLib.Variant("b", True))
             return None
         return self.tab_manager.open_file(path, create=True)

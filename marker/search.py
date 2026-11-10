@@ -11,6 +11,7 @@ gi.require_version("GtkSource", "5")
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk, GtkSource, Pango
 
 from .filetypes import SHOWN_EXTENSIONS
+from .titles import short_labels
 
 MAX_DIR_RESULTS = 200
 MAX_MATCHES_PER_FILE = 5
@@ -29,6 +30,17 @@ def grep_argv(query: str) -> list[str]:
     argv = ["grep", "-rnIFZ", "-m", str(MAX_MATCHES_PER_FILE), "--exclude-dir=.[!.]*"]
     argv += [f"--include=*{ext}" for ext in sorted(SHOWN_EXTENSIONS)]
     return argv + ["-e", query, "--", "."]
+
+
+def search_roots(folders: list[str]) -> list[str]:
+    """The folders to run grep in: existing ones, without any folder that
+    lies inside another (its files would be reported twice)."""
+    folders = [os.path.abspath(f) for f in dict.fromkeys(folders) if os.path.isdir(f)]
+    return [
+        folder for folder in folders
+        if not any(other != folder and os.path.commonpath([folder, other]) == other
+                   for other in folders)
+    ]
 
 
 def parse_grep_output(data: bytes, limit: int = MAX_DIR_RESULTS) -> tuple[list[tuple[str, int, str]], int]:
@@ -59,7 +71,8 @@ def parse_grep_output(data: bytes, limit: int = MAX_DIR_RESULTS) -> tuple[list[t
 class ResultRow(Gtk.ListBoxRow):
     """One "Find in Folder" match: where it is and the matching line."""
 
-    def __init__(self, path: str, lineno: int, text: str, root: str):
+    def __init__(self, path: str, lineno: int, text: str, root: str, root_label: str | None = None):
+        """root_label names the folder when several are searched at once."""
         super().__init__()
         self.location = (path, lineno)  # lineno is 1-based, as grep reports it
         self.set_tooltip_text(path)
@@ -70,7 +83,10 @@ class ResultRow(Gtk.ListBoxRow):
         box.set_margin_top(4)
         box.set_margin_bottom(4)
 
-        where = Gtk.Label(label=f"{os.path.relpath(path, root)}:{lineno}", xalign=0)
+        relative = os.path.relpath(path, root)
+        if root_label:
+            relative = os.path.join(root_label, relative)
+        where = Gtk.Label(label=f"{relative}:{lineno}", xalign=0)
         where.add_css_class("caption")
         where.add_css_class("dim-label")
         where.set_ellipsize(Pango.EllipsizeMode.START)
@@ -91,9 +107,9 @@ class SearchBar(Gtk.Box):
         "open-location": (GObject.SignalFlags.RUN_LAST, None, (str, int)),
     }
 
-    def __init__(self, editor, root_provider: Callable[[], str | None]):
+    def __init__(self, editor, roots_provider: Callable[[], list[str]]):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self._root_provider = root_provider
+        self._roots_provider = roots_provider
         self._search_settings = GtkSource.SearchSettings()
         self._search_settings.set_wrap_around(True)
         self._grep_cancellable: Gio.Cancellable | None = None
@@ -189,7 +205,7 @@ class SearchBar(Gtk.Box):
 
         dir_search_row = Gtk.Box(spacing=4)
 
-        self._dir_entry = Gtk.SearchEntry(placeholder_text="Search in all files…")
+        self._dir_entry = Gtk.SearchEntry(placeholder_text="Search in the sidebar's folders…")
         self._dir_entry.set_hexpand(True)
         self._dir_entry.connect("activate", self._on_dir_search)
         self._dir_entry.connect("stop-search", self._on_close)
@@ -400,52 +416,71 @@ class SearchBar(Gtk.Box):
         if not query.strip():
             return
 
-        root = self._root_provider()
+        roots = search_roots(self._roots_provider())
         self._dir_results_clear()
-        if not root:
-            self._add_dir_result_label("Open a folder first to search in files.")
+        if not roots:
+            self._add_dir_result_label("Add a folder to the sidebar to search in files.")
             return
 
         if self._grep_cancellable is not None:
             self._grep_cancellable.cancel()
-        self._grep_cancellable = Gio.Cancellable()
+        self._grep_cancellable = cancellable = Gio.Cancellable()
         self._add_dir_result_label("Searching…")
 
-        try:
-            launcher = Gio.SubprocessLauncher.new(
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+        # One grep per folder, run side by side; results are shown together
+        # once the last one finishes.
+        labels = short_labels(roots) if len(roots) > 1 else {}
+        search = {"pending": len(roots), "results": [], "total": 0, "errors": []}
+        for root in roots:
+            try:
+                launcher = Gio.SubprocessLauncher.new(
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+                )
+                launcher.set_cwd(root)
+                proc = launcher.spawnv(grep_argv(query))
+            except GLib.Error as e:
+                search["errors"].append(e.message)
+                self._on_grep_finished(search, cancellable)
+                continue
+            proc.communicate_async(
+                None, cancellable, self._on_grep_done, (search, cancellable, root, labels.get(root))
             )
-            launcher.set_cwd(root)
-            proc = launcher.spawnv(grep_argv(query))
-        except GLib.Error as e:
-            self._dir_results_clear()
-            self._add_dir_result_label(f"Search failed: {e.message}")
-            return
-        proc.communicate_async(None, self._grep_cancellable, self._on_grep_done, root)
 
-    def _on_grep_done(self, proc, result, root):
+    def _on_grep_done(self, proc, result, data):
+        search, cancellable, root, label = data
         try:
             _, stdout, _ = proc.communicate_finish(result)
         except GLib.Error as e:
-            if not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
-                self._dir_results_clear()
-                self._add_dir_result_label(f"Search failed: {e.message}")
-            return
-
-        self._dir_results_clear()
-        # grep exits with 1 for "no match" and 2 for errors such as unreadable files
-        if proc.get_exit_status() == 2 and not stdout:
-            self._add_dir_result_label("Search failed: grep could not read the folder.")
-            return
-        results, total = parse_grep_output(stdout.get_data() if stdout else b"")
-        if not results:
-            self._add_dir_result_label("No results found.")
-            return
-        for path, lineno, text in results:
+            if e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+                return  # a newer search took over
+            search["errors"].append(e.message)
+        else:
+            # grep exits with 1 for "no match" and 2 for errors such as unreadable files
+            if proc.get_exit_status() == 2 and not stdout:
+                search["errors"].append(f"grep could not read {root}")
+            results, total = parse_grep_output(stdout.get_data() if stdout else b"")
+            search["total"] += total
             # grep ran inside root, so paths look like "./sub/file.md"
-            self._add_dir_result(os.path.normpath(os.path.join(root, path)), lineno, text, root)
-        if total > len(results):
-            self._add_dir_result_label(f"… and {total - len(results)} more results.")
+            search["results"] += [
+                (os.path.normpath(os.path.join(root, path)), lineno, text, root, label)
+                for path, lineno, text in results
+            ]
+        self._on_grep_finished(search, cancellable)
+
+    def _on_grep_finished(self, search: dict, cancellable: Gio.Cancellable):
+        search["pending"] -= 1
+        if search["pending"] > 0 or cancellable.is_cancelled():
+            return
+        self._dir_results_clear()
+        results = sorted(search["results"])[:MAX_DIR_RESULTS]
+        for path, lineno, text, root, label in results:
+            self._dir_results.append(ResultRow(path, lineno, text, root, label))
+        if search["total"] > len(results):
+            self._add_dir_result_label(f"… and {search['total'] - len(results)} more results.")
+        for error in search["errors"]:
+            self._add_dir_result_label(f"Search failed: {error}")
+        if not results and not search["errors"]:
+            self._add_dir_result_label("No results found.")
 
     def _dir_results_clear(self):
         while (row := self._dir_results.get_row_at_index(0)) is not None:
@@ -463,9 +498,6 @@ class SearchBar(Gtk.Box):
         label.set_margin_bottom(4)
         row.set_child(label)
         self._dir_results.append(row)
-
-    def _add_dir_result(self, path: str, lineno: int, text: str, root: str):
-        self._dir_results.append(ResultRow(path, lineno, text, root))
 
     def _on_dir_result_activated(self, listbox, row):
         if isinstance(row, ResultRow):

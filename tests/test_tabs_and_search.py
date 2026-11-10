@@ -1,5 +1,7 @@
 """Tabs, search and sidebar behaviour."""
 
+import os
+
 import pytest
 from conftest import iterate, needs_display, wait_for
 
@@ -23,9 +25,9 @@ def test_explorer_root_only_changes_for_files_outside_it(window, tmp_path):
     (tmp_path / "docs").mkdir()
     inner = tmp_path / "docs" / "inner.md"
     inner.write_text("x")
-    window.file_explorer.set_root(str(tmp_path))
+    window.file_explorer.set_roots([str(tmp_path)])
     window.open_file(str(inner))
-    assert window.file_explorer.root_path == str(tmp_path)
+    assert window.file_explorer.roots == [str(tmp_path)]
 
 
 def test_settings_apply_to_every_tab(window):
@@ -106,7 +108,7 @@ def test_escape_closes_search(window):
 def test_folder_search_opens_result_once_at_the_line(window, tmp_path):
     (tmp_path / "notes.md").write_text("one\ntwo\n--weird: query\n")
     (tmp_path / "other.md").write_text("--weird: query too\n")
-    window.file_explorer.set_root(str(tmp_path))
+    window.file_explorer.set_roots([str(tmp_path)])
     bar = window.search_bar
     bar.show_dir_search()
     bar._dir_entry.set_text("--weird: query")  # starts with "-" and has ":"
@@ -123,18 +125,31 @@ def test_folder_search_opens_result_once_at_the_line(window, tmp_path):
     assert window.editor.get_cursor_position() == (3, 1)
 
 
+def explorer_rows(explorer):
+    """[(indent depth, name shown, path)] for every row of the tree."""
+    rows, index = [], 0
+    while (row := explorer._list_box.get_row_at_index(index)) is not None:
+        rows.append(row)
+        index += 1
+    return rows
+
+
+def explorer_paths(explorer, root):
+    return [os.path.relpath(row.path, root) for row in explorer_rows(explorer)]
+
+
 def test_explorer_keeps_expanded_folders_on_refresh(window, tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "x.md").write_text("x")
     explorer = window.file_explorer
-    explorer.set_root(str(tmp_path))
-    dir_row = explorer._list_box.get_row_at_index(0)
-    explorer._list_box.emit("row-activated", dir_row)
-    assert explorer._list_box.get_row_at_index(1).path.endswith("x.md")
+    explorer.set_roots([str(tmp_path)])
+    assert explorer_paths(explorer, tmp_path) == [".", "sub"]
+    explorer._list_box.emit("row-activated", explorer_rows(explorer)[1])
+    assert explorer_paths(explorer, tmp_path) == [".", "sub", "sub/x.md"]
 
     (tmp_path / "sub" / "y.md").write_text("y")
-    assert wait_for(lambda: (r := explorer._list_box.get_row_at_index(2)) is not None
-                    and r.path.endswith("y.md"), timeout=5)
+    assert wait_for(lambda: explorer_paths(explorer, tmp_path) == [".", "sub", "sub/x.md", "sub/y.md"],
+                    timeout=5)
 
 
 def test_view_mode_buttons_follow_the_active_tab(window):
@@ -199,7 +214,7 @@ def test_folder_search_works_in_a_hidden_root_and_skips_hidden_subfolders(window
     (root / "a.md").write_text("needle\n")
     (root / "sub" / "b.md").write_text("x\nneedle\n")
     (root / ".git" / "c.md").write_text("needle\n")
-    window.file_explorer.set_root(str(root))
+    window.file_explorer.set_roots([str(root)])
     bar = window.search_bar
     bar.show_dir_search()
     bar._dir_entry.set_text("needle")
@@ -216,7 +231,7 @@ def test_folder_search_works_in_a_hidden_root_and_skips_hidden_subfolders(window
 def test_open_path_accepts_folders_and_new_files(window, dialogs_log, tmp_path):
     window.activate_action("win.show-sidebar", None)  # hide it
     assert window.open_path(str(tmp_path)) is None
-    assert window.file_explorer.root_path == str(tmp_path)
+    assert window.file_explorer.roots == [str(tmp_path)]
     assert window.lookup_action("show-sidebar").get_state().get_boolean()
 
     new = tmp_path / "new.md"

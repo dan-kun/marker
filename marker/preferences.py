@@ -70,6 +70,14 @@ class PreferencesWindow(Adw.PreferencesWindow):
                                    self._switch("line-numbers")))
         page.add(edit_group)
 
+        explorer_group = Adw.PreferencesGroup(title="Sidebar")
+        explorer_group.add(_action_row(
+            "Follow Open Files",
+            "Add a file's folder to the sidebar when you open or switch to a file outside it",
+            self._switch("explorer-follow"),
+        ))
+        page.add(explorer_group)
+
         save_group = Adw.PreferencesGroup(
             title="Auto-save",
             description="Only files that already have a name are saved automatically.",

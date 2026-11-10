@@ -15,6 +15,7 @@ from .editor import MarkdownEditor
 from .file_manager import FileManager
 from .preview import MarkdownPreview
 from .split_view import SplitView
+from .titles import short_labels
 
 
 @dataclass(slots=True, eq=False)
@@ -105,8 +106,19 @@ class TabManager(Gtk.Box):
             self._move_preview_to(tab)
         return tab
 
+    def _update_titles(self):
+        """Name each tab after its file; tabs whose files share a name also
+        show the folder that tells them apart."""
+        paths = [t.file_manager.current_path for t in self._tab_data.values()]
+        labels = short_labels([p for p in paths if p])
+        for tab in self._tab_data.values():
+            path = tab.file_manager.current_path
+            title = labels[path] if path else "Untitled"
+            if tab.page.get_title() != title:
+                tab.page.set_title(title)
+
     def _on_tab_file_changed(self, fm, path, is_modified, tab):
-        tab.page.set_title(os.path.basename(path) if path else "Untitled")
+        self._update_titles()
         tab.page.set_tooltip(path)
         tab.page.set_indicator_icon(
             Gio.ThemedIcon.new("media-record-symbolic") if is_modified else None
@@ -175,6 +187,7 @@ class TabManager(Gtk.Box):
         if tab is self._preview_tab:
             self._preview_tab = None
         self.preview.forget_document(tab.split_view.doc_id)
+        self._update_titles()  # a remaining tab may no longer need its folder shown
         tab.file_manager.dispose()
         tab.split_view.dispose()
         tab.editor.dispose()

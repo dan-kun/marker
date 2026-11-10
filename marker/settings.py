@@ -16,6 +16,8 @@ DEFAULTS = {
     "line-numbers": True,
     "auto-save": False,
     "auto-save-delay": 30,
+    # Add a file's folder to the sidebar when the file is outside every folder shown
+    "explorer-follow": True,
 }
 
 

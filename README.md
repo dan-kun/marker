@@ -5,8 +5,9 @@ libadwaita, GtkSourceView and WebKitGTK.
 
 - Live preview with syntax highlighting, KaTeX math, Mermaid diagrams, footnotes,
   task lists and working in-document links; scrolling follows the editor line by line
-- Tabs, file explorer, recent files, minimap
-- Find & replace, regex search, search across a folder
+- Tabs for files from any number of folders; a sidebar that shows several folders
+  at once and follows the active tab; recent files; minimap
+- Find & replace, regex search, search across every folder in the sidebar
 - Keeps each file's encoding and line endings; saves atomically
 - Formatting toolbar and shortcuts that toggle (Ctrl+B, Ctrl+I, Ctrl+L, headings, lists);
   Enter continues lists, Tab and Shift+Tab nest them
@@ -86,7 +87,7 @@ The same build can be run on GitHub from the Actions tab ("Flatpak" workflow).
 ```sh
 marker notes.md other.md   # open files in tabs
 marker new.md              # start a document that is created on first save
-marker ~/notes             # open a folder in the file explorer
+marker ~/notes ~/work      # add folders to the sidebar
 marker                     # reopen the last session
 ```
 
