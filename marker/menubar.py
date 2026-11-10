@@ -32,7 +32,7 @@ def build_menubar(recents_menu: Gio.Menu) -> Gtk.PopoverMenuBar:
         _section(("New", "win.new-file"), ("New Tab", "win.new-tab"), ("Open…", "win.open-file")),
         open_recent,
         _section(("Save", "win.save-file"), ("Save As…", "win.save-file-as"),
-                 ("Close Tab", "win.close-file")),
+                 ("Reload from Disk", "win.reload"), ("Close Tab", "win.close-file")),
         _section(("Quit", "app.quit")),
     ))
 

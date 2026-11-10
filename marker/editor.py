@@ -193,17 +193,21 @@ class MarkdownEditor(Gtk.ScrolledWindow):
     def zoom_level(self) -> float:
         return self._zoom_level
 
-    def zoom_in(self):
-        self._zoom_level = min(3.0, self._zoom_level + 0.1)
-        self._update_font()
+    def set_zoom(self, level: float):
+        level = max(0.5, min(3.0, level))
+        if level != self._zoom_level:
+            self._zoom_level = level
+            self._update_font()
 
-    def zoom_out(self):
-        self._zoom_level = max(0.5, self._zoom_level - 0.1)
-        self._update_font()
-
-    def zoom_reset(self):
-        self._zoom_level = 1.0
-        self._update_font()
+    def set_cursor_position(self, line: int, column: int):
+        """Place the cursor at a 1-based (line, column), clamped to the text,
+        and keep it in view. Unlike goto_line() this does not take the focus."""
+        buf = self._buffer
+        line = max(0, min(line - 1, buf.get_line_count() - 1))
+        it = self._iter_at_line(line)
+        it.forward_chars(max(0, min(column - 1, it.get_chars_in_line() - 1)))
+        buf.place_cursor(it)
+        self._view.scroll_mark_onscreen(buf.get_insert())
 
     def goto_line(self, line: int):
         """Move the cursor to a 0-based line and scroll it into view."""

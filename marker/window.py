@@ -9,7 +9,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from . import dialogs
+from . import dialogs, session
 from .file_explorer import FileExplorer
 from .filetypes import syntax_label
 from .format_toolbar import FormatToolbar
@@ -40,7 +40,10 @@ class MarkerWindow(Adw.ApplicationWindow):
         super().__init__(**kwargs)
 
         self.set_title("Marker")
-        self.set_default_size(1200, 800)
+        self._session = session.load()
+        self.set_default_size(self._session["width"], self._session["height"])
+        if self._session["maximized"]:
+            self.maximize()
 
         # Core components
         self.settings = Settings.get_default()
@@ -55,13 +58,14 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         self._tab_handlers: list = []
         self._close_confirmed = False
-        self._sidebar_width = SIDEBAR_DEFAULT_WIDTH
+        self._sidebar_width = self._session["sidebar-width"]
         self._word_count = Debouncer(200, self._update_word_count)
 
         self._setup_actions()
         self._build_ui()
         self._setup_shortcuts()
         self._connect_signals()
+        self._restore_layout()
 
         self.connect("close-request", self._on_close_request)
         self._save_tick = GLib.timeout_add_seconds(30, self._tick_save_time)
@@ -121,6 +125,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_box.set_hexpand(True)
         editor_box.append(self.search_bar)
+        editor_box.append(self._build_conflict_bar())
         editor_box.append(self.tab_manager)
         self._content_paned.set_end_child(editor_box)
 
@@ -186,6 +191,33 @@ class MarkerWindow(Adw.ApplicationWindow):
         self._title_widget = Adw.WindowTitle(title="Marker", subtitle="")
         header.set_title_widget(self._title_widget)
         return header
+
+    def _build_conflict_bar(self):
+        """Notice shown when another program changed the file being edited."""
+        bar = Gtk.Box(spacing=8)
+        bar.add_css_class("toolbar")
+        bar.set_margin_start(8)
+        bar.set_margin_end(8)
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        bar.append(icon)
+        label = Gtk.Label(
+            label="This file was changed by another program. Your version has unsaved edits.",
+            xalign=0, wrap=True, hexpand=True,
+        )
+        bar.append(label)
+        reload_button = Gtk.Button(label="Reload from Disk", tooltip_text="Discard your unsaved edits")
+        reload_button.connect(
+            "clicked", lambda *_: self._with_tab(lambda t: t.file_manager.reload(discard=True))
+        )
+        bar.append(reload_button)
+        keep_button = Gtk.Button(label="Keep Mine", tooltip_text="Hide this notice; saving will ask first")
+        keep_button.connect(
+            "clicked", lambda *_: self._with_tab(lambda t: t.file_manager.dismiss_disk_change())
+        )
+        bar.append(keep_button)
+        bar.set_visible(False)
+        self._conflict_bar = bar
+        return bar
 
     def _build_statusbar(self):
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -254,9 +286,10 @@ class MarkerWindow(Adw.ApplicationWindow):
             "editor-only": lambda *_: self._set_view_mode("editor"),
             "preview-only": lambda *_: self._set_view_mode("preview"),
             "fullscreen": self._action_fullscreen,
-            "zoom-in": lambda *_: self._zoom("zoom_in"),
-            "zoom-out": lambda *_: self._zoom("zoom_out"),
-            "zoom-reset": lambda *_: self._zoom("zoom_reset"),
+            "zoom-in": lambda *_: self.tab_manager.set_zoom(self.tab_manager.zoom + 0.1),
+            "zoom-out": lambda *_: self.tab_manager.set_zoom(self.tab_manager.zoom - 0.1),
+            "zoom-reset": lambda *_: self.tab_manager.set_zoom(1.0),
+            "reload": lambda *_: self._with_tab(lambda t: t.file_manager.reload()),
             "goto-line": lambda *_: self._show_goto_line_dialog(),
             "preferences": self._action_preferences,
             "show-shortcuts": self._action_show_shortcuts,
@@ -286,13 +319,6 @@ class MarkerWindow(Adw.ApplicationWindow):
         app = self.get_application()
         for action, accels in iter_accels():
             app.set_accels_for_action(action, accels)
-
-    def _zoom(self, method: str):
-        """Zoom the active tab's editor and preview together."""
-        tab = self.tab_manager.active_tab
-        if tab is not None:
-            getattr(tab.editor, method)()
-            self.preview.set_zoom(tab.editor.zoom_level)
 
     def _with_tab(self, func):
         tab = self.tab_manager.active_tab
@@ -353,12 +379,15 @@ class MarkerWindow(Adw.ApplicationWindow):
         self.set_title(f"{name} – Marker" if path else "Marker")
         self._status_syntax.set_text(syntax_label(path or None))
         self._status_encoding.set_text(f"{fm.encoding_label} · {fm.newline_label}")
+        self._conflict_bar.set_visible(fm.changed_on_disk)
         self._update_save_label()
 
     def _update_save_label(self):
         fm = self.file_manager
         if fm is None:
             text = ""
+        elif fm.autosave_problem:
+            text = f"Auto-save paused: {fm.autosave_problem}"
         elif fm.is_modified:
             text = "Modified"
         elif fm.last_saved is not None:
@@ -519,7 +548,57 @@ class MarkerWindow(Adw.ApplicationWindow):
             self._close_confirmed = True
             self.close()
 
+    # ── Session ────────────────────────────────────────────────────────────
+
+    def _restore_layout(self):
+        """Apply the remembered panels, view mode and zoom."""
+        state = self._session
+        self.tab_manager.set_zoom(state["zoom"])
+        self._set_view_mode(state["view-mode"])
+        if not state["sidebar"]:
+            self.change_action_state("show-sidebar", GLib.Variant("b", False))
+        if not state["minimap"]:
+            self.change_action_state("show-minimap", GLib.Variant("b", False))
+
+    def restore_documents(self):
+        """Reopen the folder and files from the last run (when started
+        without files on the command line)."""
+        state = self._session
+        if state["folder"] and os.path.isdir(state["folder"]):
+            self.file_explorer.set_root(state["folder"])
+        tabs = [self.tab_manager.open_file(path) for path in state["files"] if os.path.isfile(path)]
+        # "active" indexes the saved list; files that vanished shift it
+        wanted = state["files"][state["active"]] if state["active"] < len(state["files"]) else None
+        for tab in tabs:
+            if tab is not None and tab.file_manager.current_path == wanted:
+                self.tab_manager.select(tab)
+
+    def _save_session(self):
+        tabs = self.tab_manager.tabs()
+        files = [t.file_manager.current_path for t in tabs if t.file_manager.current_path]
+        active = self.file_manager.current_path if self.file_manager else None
+        state = dict(self._session)
+        if not self.is_maximized():
+            # The default size tracks user resizes; get_width() would also
+            # count the client-side shadow and drift on every run.
+            width, height = self.get_default_size()
+            if width > 0 and height > 0:
+                state["width"], state["height"] = width, height
+        state.update({
+            "maximized": self.is_maximized(),
+            "sidebar": self.lookup_action("show-sidebar").get_state().get_boolean(),
+            "sidebar-width": self._sidebar_width,
+            "minimap": self.lookup_action("show-minimap").get_state().get_boolean(),
+            "view-mode": self.lookup_action("view-mode").get_state().get_string(),
+            "zoom": self.tab_manager.zoom,
+            "folder": self.file_explorer.root_path,
+            "files": files,
+            "active": files.index(active) if active in files else 0,
+        })
+        session.save(state)
+
     def _finish_close(self) -> bool:
+        self._save_session()
         if self._save_tick:
             GLib.source_remove(self._save_tick)
             self._save_tick = 0

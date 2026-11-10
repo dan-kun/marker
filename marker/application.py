@@ -37,7 +37,10 @@ class MarkerApplication(Adw.Application):
         Gtk.Window.set_default_icon_name(__app_id__)
 
     def _on_activate(self, app):
+        existing = self.get_windows()
         window = self._get_or_create_window()
+        if not existing:
+            window.restore_documents()  # started without files: pick up where we left off
         window.present()
 
     def _on_quit(self, action, param):

@@ -68,6 +68,7 @@ class TabManager(Gtk.Box):
         self.preview = MarkdownPreview()
         self.preview.connect("open-file", self._on_preview_open_file)
         self._preview_tab: TabData | None = None
+        self._zoom = 1.0  # shared by every tab's editor and the preview
 
         self._tab_view.connect("notify::selected-page", self._on_selected_page_changed)
         self._tab_view.connect("close-page", self._on_close_page)
@@ -80,6 +81,7 @@ class TabManager(Gtk.Box):
     def _create_tab_data(self) -> TabData:
         editor = MarkdownEditor()
         editor.apply_settings(self._settings)
+        editor.set_zoom(self._zoom)
         active = self._active_tab()
         # New tabs open in the view mode the user is currently working in
         split_view = SplitView(editor, mode=active.split_view.get_mode() if active else "split")
@@ -93,6 +95,7 @@ class TabManager(Gtk.Box):
         tab.handlers = [
             (file_manager, file_manager.connect("file-changed", self._on_tab_file_changed, tab)),
             (file_manager, file_manager.connect("loaded", self._on_tab_loaded)),
+            (file_manager, file_manager.connect("saved", self._on_tab_saved, tab)),
         ]
         self._tab_data[page] = tab
         # Adw.TabView selects the first page as soon as it is appended,
@@ -111,6 +114,16 @@ class TabManager(Gtk.Box):
 
     def _on_tab_loaded(self, fm, path):
         self.emit("file-opened", path)
+
+    def _on_tab_saved(self, fm, path, tab):
+        """After "Save As" onto a file that another tab has open, close that
+        tab if it has nothing to lose. One with unsaved edits stays and
+        reports the conflict through its own file monitor."""
+        for other in self.tabs():
+            other_path = other.file_manager.current_path
+            if other is not tab and other_path and _same_file(other_path, path) \
+                    and not other.file_manager.is_modified:
+                self._tab_view.close_page(other.page)
 
     def _on_preview_open_file(self, preview, path):
         self.open_file(path)
@@ -175,6 +188,17 @@ class TabManager(Gtk.Box):
 
     def modified_tabs(self) -> list[TabData]:
         return [t for t in self.tabs() if t.file_manager.is_modified]
+
+    @property
+    def zoom(self) -> float:
+        return self._zoom
+
+    def set_zoom(self, level: float):
+        """Zoom every editor and the preview together."""
+        self._zoom = max(0.5, min(3.0, round(level, 2)))
+        for tab in self._tab_data.values():
+            tab.editor.set_zoom(self._zoom)
+        self.preview.set_zoom(self._zoom)
 
     def select(self, tab: TabData):
         self._tab_view.set_selected_page(tab.page)
