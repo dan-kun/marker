@@ -16,6 +16,9 @@ dependencies = []
 [project.scripts]
 marker = "marker.__main__:main"
 
+[tool.setuptools]
+license-files = ["COPYING"]
+
 [tool.setuptools.dynamic]
 version = { attr = "marker.__version__" }
 

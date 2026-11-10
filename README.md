@@ -97,4 +97,4 @@ the new files.
 
 ## License
 
-GPL-3.0-or-later
+GPL-3.0-or-later. See [COPYING](COPYING).

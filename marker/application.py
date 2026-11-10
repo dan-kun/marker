@@ -50,7 +50,7 @@ class MarkerApplication(Adw.Application):
         for gfile in files:
             path = gfile.get_path()  # None for non-local URIs
             if path:
-                window.open_file(path)
+                window.open_path(path)
 
     def _get_or_create_window(self) -> MarkerWindow:
         for window in self.get_windows():

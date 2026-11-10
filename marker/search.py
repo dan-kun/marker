@@ -16,6 +16,21 @@ MAX_DIR_RESULTS = 200
 MAX_MATCHES_PER_FILE = 5
 
 
+def grep_argv(query: str) -> list[str]:
+    """grep command for a literal search of the current directory.
+
+    -F: literal text; -e/--: the query can never be read as an option;
+    -I: skip binary files; -Z: NUL after the file name.
+    grep applies --exclude-dir to the directory named on the command line
+    too, so we search "." from inside the folder with a pattern that skips
+    hidden subfolders (.git) but not "." itself. Passing the folder's path
+    with --exclude-dir=.* would skip a hidden root such as ~/.notes entirely.
+    """
+    argv = ["grep", "-rnIFZ", "-m", str(MAX_MATCHES_PER_FILE), "--exclude-dir=.[!.]*"]
+    argv += [f"--include=*{ext}" for ext in sorted(SHOWN_EXTENSIONS)]
+    return argv + ["-e", query, "--", "."]
+
+
 def parse_grep_output(data: bytes, limit: int = MAX_DIR_RESULTS) -> tuple[list[tuple[str, int, str]], int]:
     """Parse `grep -rnZ` output into ([(path, line, text)], total_count).
 
@@ -374,15 +389,12 @@ class SearchBar(Gtk.Box):
         self._grep_cancellable = Gio.Cancellable()
         self._add_dir_result_label("Searching…")
 
-        # -F: literal text, -e/--: the query can never be read as an option,
-        # -I: skip binary files, -Z: NUL after the file name.
-        argv = ["grep", "-rnIFZ", "-m", str(MAX_MATCHES_PER_FILE), "--exclude-dir=.*"]
-        argv += [f"--include=*{ext}" for ext in sorted(SHOWN_EXTENSIONS)]
-        argv += ["-e", query, "--", root]
         try:
-            proc = Gio.Subprocess.new(
-                argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+            launcher = Gio.SubprocessLauncher.new(
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
             )
+            launcher.set_cwd(root)
+            proc = launcher.spawnv(grep_argv(query))
         except GLib.Error as e:
             self._dir_results_clear()
             self._add_dir_result_label(f"Search failed: {e.message}")
@@ -408,7 +420,8 @@ class SearchBar(Gtk.Box):
             self._add_dir_result_label("No results found.")
             return
         for path, lineno, text in results:
-            self._add_dir_result(path, lineno, text, root)
+            # grep ran inside root, so paths look like "./sub/file.md"
+            self._add_dir_result(os.path.normpath(os.path.join(root, path)), lineno, text, root)
         if total > len(results):
             self._add_dir_result_label(f"… and {total - len(results)} more results.")
 

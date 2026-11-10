@@ -167,13 +167,18 @@ class TabManager(Gtk.Box):
 
     def find_tab(self, path: str) -> TabData | None:
         for tab in self._tab_data.values():
-            if tab.file_manager.current_path and _same_file(tab.file_manager.current_path, path):
+            current = tab.file_manager.current_path
+            if current and _same_file(current, path):
                 return tab
         return None
 
-    def open_file(self, path: str) -> TabData | None:
+    def open_file(self, path: str, create: bool = False) -> TabData | None:
         """Show path in a tab: the one already holding it, the current tab
-        if it is blank, or a new tab. Returns None if the file can't be read."""
+        if it is blank, or a new tab. Returns None if the file can't be read.
+
+        With create=True a path that does not exist yet (in an existing
+        folder) opens as an empty document that is created on first save.
+        """
         tab = self.find_tab(path)
         if tab is not None:
             self.select(tab)
@@ -185,7 +190,10 @@ class TabManager(Gtk.Box):
         else:
             tab, created = self._create_tab_data(), True
 
-        if not tab.file_manager.load(path):
+        path = os.path.abspath(path)
+        if create and not os.path.lexists(path) and os.path.isdir(os.path.dirname(path)):
+            tab.file_manager.start_new(path)
+        elif not tab.file_manager.load(path):
             if created:
                 self._tab_view.close_page(tab.page)
             return None

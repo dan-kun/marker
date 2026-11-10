@@ -116,6 +116,11 @@ class FileManager(GObject.Object):
         self._set_path(None)
         self._editor.grab_focus()
 
+    def start_new(self, path: str):
+        """Start an empty document that will be created at path on first save."""
+        self._reset()
+        self._set_path(path)
+
     def load(self, path: str) -> bool:
         """Replace the buffer with the file at path. Shows an error on failure."""
         try:

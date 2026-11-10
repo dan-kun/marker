@@ -530,3 +530,13 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def open_file(self, path: str):
         return self.tab_manager.open_file(path)
+
+    def open_path(self, path: str):
+        """Open something named on the command line: a folder becomes the
+        explorer's root, a file opens in a tab, and a file that does not
+        exist yet opens as a new document with that name."""
+        if os.path.isdir(path):
+            self.file_explorer.set_root(path)
+            self.change_action_state("show-sidebar", GLib.Variant("b", True))
+            return None
+        return self.tab_manager.open_file(path, create=True)

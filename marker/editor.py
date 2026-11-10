@@ -6,9 +6,10 @@ import re
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gdk, GObject, Gtk, GtkSource
+from gi.repository import Adw, Gdk, GObject, Gtk, GtkSource
 
 _editor_ids = itertools.count(1)
 
@@ -48,16 +49,23 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._buffer.set_max_undo_levels(0)  # 0 = unlimited in GtkSource
 
         self._apply_scheme()
+        # StyleManager is a process-wide singleton: disconnected in dispose()
+        self._style_handler = Adw.StyleManager.get_default().connect(
+            "notify::dark", self._apply_scheme
+        )
         self._buffer.connect("changed", self._on_buffer_changed)
         self._buffer.connect("notify::cursor-position", self._on_cursor_moved)
 
-    def _apply_scheme(self):
+    def _apply_scheme(self, *_):
+        """Use the light or dark Adwaita scheme to match the app's theme."""
+        dark = Adw.StyleManager.get_default().get_dark()
         scheme_manager = GtkSource.StyleSchemeManager.get_default()
-        scheme = scheme_manager.get_scheme("Adwaita")
-        if not scheme:
-            scheme = scheme_manager.get_scheme("classic")
-        if scheme:
-            self._buffer.set_style_scheme(scheme)
+        candidates = ("Adwaita-dark", "classic-dark") if dark else ("Adwaita", "classic")
+        for scheme_id in candidates:
+            scheme = scheme_manager.get_scheme(scheme_id)
+            if scheme:
+                self._buffer.set_style_scheme(scheme)
+                return
 
     def _setup_view(self):
         self._view = GtkSource.View.new_with_buffer(self._buffer)
@@ -100,6 +108,9 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         if self._display is not None:
             Gtk.StyleContext.remove_provider_for_display(self._display, self._css_provider)
             self._display = None
+        if self._style_handler:
+            Adw.StyleManager.get_default().disconnect(self._style_handler)
+            self._style_handler = 0
 
     # ── Signal handlers ────────────────────────────────────────────────────
 

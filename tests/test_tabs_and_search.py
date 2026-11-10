@@ -167,3 +167,63 @@ def test_minimap_viewport_matches_drawn_lines_for_short_documents(window):
     scale, content_h = minimap._layout(600)
     assert scale == 1.0
     assert content_h == minimap.HEADING_HEIGHT + 6 * minimap.LINE_HEIGHT  # not the widget height
+
+
+def test_editor_scheme_follows_dark_mode(window):
+    from gi.repository import Adw
+
+    style = Adw.StyleManager.get_default()
+    buffer = window.editor.get_buffer()
+    try:
+        style.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        iterate(0.1)
+        assert buffer.get_style_scheme().get_id() == "Adwaita-dark"
+        # editors created while dark start dark too
+        assert window.tab_manager.new_tab().editor.get_buffer().get_style_scheme().get_id() == "Adwaita-dark"
+        style.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+        iterate(0.1)
+        assert buffer.get_style_scheme().get_id() == "Adwaita"
+    finally:
+        style.set_color_scheme(Adw.ColorScheme.DEFAULT)
+
+
+def test_folder_search_works_in_a_hidden_root_and_skips_hidden_subfolders(window, tmp_path):
+    root = tmp_path / ".notes"
+    (root / ".git").mkdir(parents=True)
+    (root / "sub").mkdir()
+    (root / "a.md").write_text("needle\n")
+    (root / "sub" / "b.md").write_text("x\nneedle\n")
+    (root / ".git" / "c.md").write_text("needle\n")
+    window.file_explorer.set_root(str(root))
+    bar = window.search_bar
+    bar.show_dir_search()
+    bar._dir_entry.set_text("needle")
+    bar._on_dir_search()
+    assert wait_for(lambda: getattr(bar._dir_results.get_row_at_index(0), "location", None))
+    rows = []
+    index = 0
+    while (row := bar._dir_results.get_row_at_index(index)) is not None:
+        rows.append(row.location)
+        index += 1
+    assert sorted(rows) == [(str(root / "a.md"), 1), (str(root / "sub" / "b.md"), 2)]
+
+
+def test_open_path_accepts_folders_and_new_files(window, dialogs_log, tmp_path):
+    window.activate_action("win.show-sidebar", None)  # hide it
+    assert window.open_path(str(tmp_path)) is None
+    assert window.file_explorer.root_path == str(tmp_path)
+    assert window.lookup_action("show-sidebar").get_state().get_boolean()
+
+    new = tmp_path / "new.md"
+    tab = window.open_path(str(new))
+    assert tab.file_manager.current_path == str(new)
+    assert tab.page.get_title() == "new.md"
+    assert not new.exists() and not tab.file_manager.is_modified
+    tab.file_manager.save_file()
+    assert new.read_text() == ""
+    assert dialogs_log == []
+
+    # a missing folder is still an error, and plain open_file never creates
+    assert window.open_path(str(tmp_path / "nope" / "x.md")) is None
+    assert window.open_file(str(tmp_path / "other.md")) is None
+    assert len(dialogs_log) == 2
