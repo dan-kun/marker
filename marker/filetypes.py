@@ -30,16 +30,24 @@ def is_shown(name: str) -> bool:
 
 
 def icon_name(name: str) -> str:
-    ext = extension(name)
-    if ext in MARKDOWN_EXTENSIONS:
-        return "text-x-markdown-symbolic"
-    if ext == ".py":
-        return "text-x-python-symbolic"
-    if ext in {".json", ".yaml", ".yml", ".toml", ".sh", ".js", ".ts"}:
-        return "text-x-script-symbolic"
+    """Icon for a file in the sidebar. One icon for all: the per-type
+    symbolic icons are missing from Adwaita, where they showed up as a
+    mix of full-colour and "missing image" icons."""
     return "text-x-generic-symbolic"
 
 
-def syntax_label(path: str | None) -> str:
-    """Status-bar label. Untitled documents are edited as Markdown."""
-    return "Markdown" if path is None or is_markdown(path) else "Plain Text"
+# highlight.js language used to show a non-Markdown file in the preview
+_PREVIEW_SYNTAX = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript", ".sh": "bash",
+    ".html": "xml", ".css": "css", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "ini", ".ini": "ini", ".cfg": "ini", ".conf": "ini",
+}
+
+
+def preview_syntax(path: str | None) -> str | None:
+    """How the preview shows a file: None renders it as Markdown (untitled
+    documents included); otherwise its text is shown as it is, highlighted
+    as this highlight.js language ("plaintext" for none)."""
+    if path is None or is_markdown(path):
+        return None
+    return _PREVIEW_SYNTAX.get(extension(path), "plaintext")

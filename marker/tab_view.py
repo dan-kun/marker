@@ -9,13 +9,14 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GObject, Gtk
+from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from .editor import MarkdownEditor
 from .file_manager import FileManager
+from .filetypes import preview_syntax
 from .preview import MarkdownPreview
-from .split_view import SplitView
-from .titles import short_labels
+from .split_view import Divider, SplitView
+from .titles import display, short_labels
 
 
 @dataclass(slots=True, eq=False)
@@ -41,8 +42,8 @@ class TabManager(Gtk.Box):
 
     __gsignals__ = {
         "active-tab-changed": (GObject.SignalFlags.RUN_LAST, None, ()),
-        # Emitted after any tab loads a file from disk
-        "file-opened": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        # Emitted after a file is opened in a tab (not when it is reloaded)
+        "file-opened": (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
     def __init__(self, window, recents_manager, settings):
@@ -71,6 +72,7 @@ class TabManager(Gtk.Box):
         self.preview.connect("line-activated", self._on_preview_line_activated)
         self._preview_tab: TabData | None = None
         self._zoom = 1.0  # shared by every tab's editor and the preview
+        self.divider = Divider()  # ...and so is the editor/preview divider
 
         self._tab_view.connect("notify::selected-page", self._on_selected_page_changed)
         self._tab_view.connect("close-page", self._on_close_page)
@@ -86,7 +88,8 @@ class TabManager(Gtk.Box):
         editor.set_zoom(self._zoom)
         active = self._active_tab()
         # New tabs open in the view mode the user is currently working in
-        split_view = SplitView(editor, mode=active.split_view.get_mode() if active else "split")
+        split_view = SplitView(editor, mode=active.split_view.get_mode() if active else "split",
+                               divider=self.divider)
         file_manager = FileManager(self._window, editor, self._recents_manager, self._settings)
 
         page = self._tab_view.append(split_view)
@@ -119,11 +122,12 @@ class TabManager(Gtk.Box):
 
     def _on_tab_file_changed(self, fm, path, is_modified, tab):
         self._update_titles()
-        tab.page.set_tooltip(path)
+        tab.page.set_tooltip(GLib.markup_escape_text(display(path)))  # the tooltip is markup
         tab.page.set_indicator_icon(
             Gio.ThemedIcon.new("media-record-symbolic") if is_modified else None
         )
-        tab.split_view.set_base_dir(os.path.dirname(path) if path else None)
+        tab.split_view.set_document(os.path.dirname(path) if path else None,
+                                    preview_syntax(path or None))
 
     def _on_tab_loaded(self, fm, path):
         self.emit("file-opened", path)
@@ -256,6 +260,7 @@ class TabManager(Gtk.Box):
         path = os.path.abspath(path)
         if create and not os.path.lexists(path) and os.path.isdir(os.path.dirname(path)):
             tab.file_manager.start_new(path)
+            self.emit("file-opened", path)
         elif not tab.file_manager.load(path):
             if created:
                 self._tab_view.close_page(tab.page)
@@ -293,10 +298,12 @@ class TabManager(Gtk.Box):
             self._tab_view.set_selected_page(self._tab_view.get_nth_page(index))
 
     def next_tab(self):
-        self._tab_view.select_next_page()
+        if not self._tab_view.select_next_page():
+            self.goto_tab(0)  # wrap around from the last tab
 
     def prev_tab(self):
-        self._tab_view.select_previous_page()
+        if not self._tab_view.select_previous_page():
+            self.goto_tab(self._tab_view.get_n_pages() - 1)
 
     # ── Properties ─────────────────────────────────────────────────────────
 

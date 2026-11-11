@@ -6,12 +6,16 @@ libadwaita, GtkSourceView and WebKitGTK.
 - Live preview with syntax highlighting, KaTeX math, Mermaid diagrams, footnotes,
   task lists and working in-document links; scrolling follows the editor line by line
 - Tabs for files from any number of folders; a sidebar that shows several folders
-  at once and follows the active tab; recent files; minimap
+  at once and follows the files you open; recent files; minimap
+- Other text files (Python, JSON, YAML, …) open with their own highlighting and
+  are shown as source in the preview, not read as Markdown
 - Find & replace, regex search, search across every folder in the sidebar
+  (ignoring case unless you ask otherwise)
 - Keeps each file's encoding and line endings; saves atomically
 - Formatting toolbar and shortcuts that toggle (Ctrl+B, Ctrl+I, Ctrl+L, headings, lists);
   Enter continues lists, Tab and Shift+Tab nest them
-- Follows changes made by other programs, and reopens your last session
+- Follows changes made by other programs, tells you when a file you are editing
+  was changed or deleted behind your back, and reopens your last session
 
 ## Requirements
 
@@ -85,11 +89,14 @@ The same build can be run on GitHub from the Actions tab ("Flatpak" workflow).
 ## Using it from a terminal
 
 ```sh
-marker notes.md other.md   # open files in tabs
+marker                     # reopen the last session
+marker notes.md other.md   # ...and open these files in tabs as well
 marker new.md              # start a document that is created on first save
 marker ~/notes ~/work      # add folders to the sidebar
-marker                     # reopen the last session
 ```
+
+Marker always picks up where you left off; files and folders named on the
+command line are added to that session.
 
 ## Configuration
 
@@ -101,8 +108,8 @@ immediately to every tab. Recent files are kept in
 ## Security
 
 Markdown files can contain raw HTML. The preview sanitizes it with DOMPurify,
-runs Mermaid in strict mode, and uses a Content Security Policy that blocks
-network requests from scripts. The page cannot read other local files.
+removes `<style>` elements, runs Mermaid in strict mode, and uses a Content
+Security Policy that blocks network requests from scripts. The page cannot read other local files.
 Links open in your browser (http, https and mailto only), and links to local
 text files open in a Marker tab.
 

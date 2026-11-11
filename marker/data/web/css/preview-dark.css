@@ -30,7 +30,9 @@ body.dark blockquote {
   border-left-color: #3d444d;
 }
 
-body.dark code:not([class]) {
+/* Inline code only: inside a code block this would paint a band behind
+   every line. */
+body.dark :not(pre) > code:not([class]) {
   background: rgba(110, 118, 129, 0.4);
   color: #e6edf3;
 }

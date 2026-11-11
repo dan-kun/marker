@@ -29,13 +29,6 @@
   },
   {
     "type": "file",
-    "url": "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js",
-    "sha256": "7b57d427ac6270677daf8d8380ded2cc73336f9149a167b8e1fe0d6ef66604ae",
-    "dest": "marker/data/web/js",
-    "dest-filename": "auto-render.min.js"
-  },
-  {
-    "type": "file",
     "url": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js",
     "sha256": "837a6fa5b0c736b52bbde2b2b6190f305da3fc9ed41681db5321507057b5c846",
     "dest": "marker/data/web/js",

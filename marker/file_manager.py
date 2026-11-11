@@ -7,7 +7,6 @@ from collections.abc import Callable
 from gi.repository import Gio, GObject
 
 from . import dialogs
-from .filetypes import is_markdown
 from .textio import (
     ENCODING_NAMES,
     NEWLINE_NAMES,
@@ -15,6 +14,7 @@ from .textio import (
     read_text_file,
     write_text_file,
 )
+from .titles import display
 from .utils import Debouncer
 
 # Called with True when the operation completed, False if cancelled or failed.
@@ -29,11 +29,13 @@ def _finish(on_done: DoneCallback, ok: bool):
 class FileManager(GObject.Object):
     """Owns the file behind one editor: path, encoding, line endings, dirty state."""
 
+    # Paths travel as Python objects: a GObject string must be valid UTF-8,
+    # and a file name need not be.
     __gsignals__ = {
         # (path or "", is_modified) — whenever either changes
-        "file-changed": (GObject.SignalFlags.RUN_LAST, None, (str, bool)),
-        "loaded": (GObject.SignalFlags.RUN_LAST, None, (str,)),
-        "saved": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        "file-changed": (GObject.SignalFlags.RUN_LAST, None, (object, bool)),
+        "loaded": (GObject.SignalFlags.RUN_LAST, None, (object,)),
+        "saved": (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
     def __init__(self, window, editor, recents_manager=None, settings=None):
@@ -52,6 +54,12 @@ class FileManager(GObject.Object):
 
         # Set when another program changed the file while it has unsaved edits here
         self._disk_conflict = False
+        # The version on disk the user chose to keep their own edits over
+        self._kept_over_mtime_ns: int | None = None
+        # The file was deleted or moved away by another program, and whether
+        # the user has already been told and dismissed the notice
+        self._missing = False
+        self._missing_dismissed = False
         # Why the last auto-save did not happen, or None
         self._autosave_problem: str | None = None
         self._monitor: Gio.FileMonitor | None = None
@@ -83,7 +91,7 @@ class FileManager(GObject.Object):
 
     @property
     def display_name(self) -> str:
-        return os.path.basename(self._current_path) if self._current_path else "Untitled"
+        return display(os.path.basename(self._current_path)) if self._current_path else "Untitled"
 
     @property
     def encoding_label(self) -> str:
@@ -104,6 +112,12 @@ class FileManager(GObject.Object):
         return self._disk_conflict
 
     @property
+    def missing_on_disk(self) -> bool:
+        """The file was deleted or moved by another program; the text shown
+        here is the only copy until it is saved again."""
+        return self._missing and not self._missing_dismissed
+
+    @property
     def autosave_problem(self) -> str | None:
         return self._autosave_problem
 
@@ -114,7 +128,7 @@ class FileManager(GObject.Object):
 
     def _set_path(self, path: str | None):
         self._current_path = path
-        self._editor.set_language("markdown" if path is None or is_markdown(path) else None)
+        self._editor.set_file_type(path)
         self._buffer.set_modified(False)
         self._watch(path)
         self.emit("file-changed", path or "", False)
@@ -136,7 +150,7 @@ class FileManager(GObject.Object):
         self._autosave.cancel()
         self._encoding, self._newline = "utf-8", "\n"
         self._mtime_ns = self._last_saved = None
-        self._disk_conflict, self._autosave_problem = False, None
+        self._clear_disk_state()
         self._set_path(None)
         self._editor.grab_focus()
 
@@ -145,18 +159,26 @@ class FileManager(GObject.Object):
         self._reset()
         self._set_path(path)
 
-    def load(self, path: str) -> bool:
-        """Replace the buffer with the file at path. Shows an error on failure."""
+    def _clear_disk_state(self):
+        self._disk_conflict = self._missing = self._missing_dismissed = False
+        self._kept_over_mtime_ns = self._autosave_problem = None
+
+    def _read(self, path: str):
+        """The file's contents, or None after showing why it cannot be opened."""
         try:
-            text_file = read_text_file(path)
+            return read_text_file(path)
         except BinaryFileError:
             dialogs.show_error(self._window, "Cannot Open File",
-                               f"“{os.path.basename(path)}” is not a text file.")
-            return False
+                               f"“{display(os.path.basename(path))}” is not a text file.")
         except OSError as e:
             dialogs.show_error(self._window, "Cannot Open File", e.strerror or str(e))
-            return False
+        return None
 
+    def load(self, path: str) -> bool:
+        """Replace the buffer with the file at path. Shows an error on failure."""
+        text_file = self._read(path)
+        if text_file is None:
+            return False
         self._show(path, text_file)
         self._last_saved = None
         if self._recents:
@@ -170,18 +192,31 @@ class FileManager(GObject.Object):
         self._encoding = text_file.encoding
         self._newline = text_file.newline
         self._mtime_ns = text_file.mtime_ns
-        self._disk_conflict, self._autosave_problem = False, None
+        self._clear_disk_state()
         self._set_path(path)
 
+    def _show_keeping_cursor(self, path: str, text_file):
+        line, column = self._editor.get_cursor_position()
+        self._show(path, text_file)
+        self._editor.set_cursor_position(line, column)
+
     def reload(self, on_done: DoneCallback = None, discard: bool = False):
-        """Re-read the file from disk. Asks about unsaved edits unless discard is set."""
+        """Re-read the file from disk, keeping the cursor where it was.
+        Asks about unsaved edits unless discard is set."""
         path = self._current_path
         if not path:
             return
+
+        def proceed(ok: bool):
+            text_file = self._read(path) if ok else None
+            if text_file is not None:
+                self._show_keeping_cursor(path, text_file)
+            _finish(on_done, text_file is not None)
+
         if discard:
-            _finish(on_done, self.load(path))
+            proceed(True)
         else:
-            self.confirm_discard(lambda ok: _finish(on_done, ok and self.load(path)))
+            self.confirm_discard(proceed)
 
     # ── Changes made by other programs ─────────────────────────────────────
 
@@ -204,10 +239,17 @@ class FileManager(GObject.Object):
         """React to a change on disk: follow it when the editor has no unsaved
         edits, otherwise flag the conflict and let the user decide."""
         path = self._current_path
-        if not path or not self._changed_on_disk(path):
+        if not path:
+            return
+        # A file that was never saved (a new document with a name) is not missing
+        missing = self._mtime_ns is not None and not os.path.lexists(path)
+        if missing != self._missing:
+            self._missing, self._missing_dismissed = missing, False
+            self.emit("file-changed", path, self.is_modified)
+        if missing or not self._changed_on_disk(path):
             return  # our own save, or a touch that changed nothing we track
         if self.is_modified:
-            if not self._disk_conflict:
+            if not self._disk_conflict and self._disk_mtime(path) != self._kept_over_mtime_ns:
                 self._disk_conflict = True
                 self.emit("file-changed", path, True)
             return
@@ -218,15 +260,18 @@ class FileManager(GObject.Object):
         if text_file.text == self._editor.get_text():
             self._mtime_ns = text_file.mtime_ns
             return
-        line, column = self._editor.get_cursor_position()
-        self._show(path, text_file)
-        self._editor.set_cursor_position(line, column)
+        self._show_keeping_cursor(path, text_file)
 
     def dismiss_disk_change(self):
-        """Hide the conflict notice. Saving still asks before overwriting."""
-        if self._disk_conflict:
+        """Hide the notice about a change or deletion on disk. The user's
+        text stays as it is; saving still asks before overwriting, and
+        auto-save stays paused rather than bring the notice back."""
+        path = self._current_path
+        if path and (self._disk_conflict or self.missing_on_disk):
+            self._kept_over_mtime_ns = self._disk_mtime(path)
             self._disk_conflict = False
-            self.emit("file-changed", self._current_path or "", self.is_modified)
+            self._missing_dismissed = self._missing
+            self.emit("file-changed", path, self.is_modified)
 
     # ── Saving ─────────────────────────────────────────────────────────────
 
@@ -248,13 +293,18 @@ class FileManager(GObject.Object):
 
         dialogs.choose_save_path(self._window, chosen, name=name, folder=folder)
 
+    @staticmethod
+    def _disk_mtime(path: str) -> int | None:
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return None  # deleted or unreadable: saving recreates it
+
     def _changed_on_disk(self, path: str) -> bool:
         if path != self._current_path or self._mtime_ns is None:
             return False
-        try:
-            return os.stat(path).st_mtime_ns != self._mtime_ns
-        except OSError:
-            return False  # deleted or unreadable: saving recreates it
+        mtime_ns = self._disk_mtime(path)
+        return mtime_ns is not None and mtime_ns != self._mtime_ns
 
     def _write_file(self, path: str, on_done: DoneCallback):
         if not self._changed_on_disk(path):
@@ -270,7 +320,7 @@ class FileManager(GObject.Object):
         dialogs.ask(
             self._window,
             "File Changed on Disk",
-            f"“{os.path.basename(path)}” was modified by another program after it was "
+            f"“{display(os.path.basename(path))}” was modified by another program after it was "
             "opened. Saving will replace those changes.",
             [("cancel", "Cancel", None), ("overwrite", "Overwrite", "destructive")],
             default="cancel",
@@ -302,7 +352,7 @@ class FileManager(GObject.Object):
         self._encoding = encoding
         self._mtime_ns = mtime_ns
         self._last_saved = time.time()
-        self._disk_conflict, self._autosave_problem = False, None
+        self._clear_disk_state()
         self._set_path(path)
         if self._recents:
             self._recents.push(path)

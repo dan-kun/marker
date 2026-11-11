@@ -8,7 +8,7 @@ from gi.repository import GLib, GObject, Gtk, Pango
 
 from .filetypes import icon_name
 from .recents import SIDEBAR_LIMIT, RecentFilesManager, format_relative_time
-from .titles import short_labels
+from .titles import display, short_labels
 
 
 class RecentRow(Gtk.ListBoxRow):
@@ -18,7 +18,7 @@ class RecentRow(Gtk.ListBoxRow):
         super().__init__()
         self.path = path
         self.opened_at = opened_at
-        self.set_tooltip_text(path)
+        self.set_tooltip_text(display(path))
 
         box = Gtk.Box(spacing=6)
         box.set_margin_start(8)
@@ -37,7 +37,7 @@ class RecentRow(Gtk.ListBoxRow):
 
         self._time_label = Gtk.Label(label=format_relative_time(opened_at), xalign=1)
         self._time_label.add_css_class("caption")
-        self._time_label.add_css_class("dim-label")
+        self._time_label.add_css_class("marker-dim")
         box.append(self._time_label)
 
         self.set_child(box)
@@ -50,7 +50,7 @@ class RecentsSection(Gtk.Box):
     """Collapsible recent-files section shown above the file tree in the sidebar."""
 
     __gsignals__ = {
-        "file-activated": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        "file-activated": (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
     def __init__(self, recents_manager: RecentFilesManager):
@@ -76,7 +76,7 @@ class RecentsSection(Gtk.Box):
 
         title = Gtk.Label(label="RECENT", xalign=0)
         title.add_css_class("caption")
-        title.add_css_class("dim-label")
+        title.add_css_class("marker-dim")
         title.set_hexpand(True)
         header.append(title)
 

@@ -78,13 +78,44 @@ def toggle_wrap(text: str, start: int, end: int, prefix: str, suffix: str) -> Ed
 
 # indent, bullet | number + delimiter, spacing, optional task checkbox
 _LIST_ITEM = re.compile(r"^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?")
+_BULLET = re.compile(r"^(\s*)[-*+]\s+")
 _NUMBERED = re.compile(r"^(\s*)\d+[.)]\s+")
+_THEMATIC_BREAK = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")  # "* * *", "---"
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+# Spaces that nest a list item one level. Four puts the item inside its
+# parent for bullets and for numbers up to "99.", whatever the tab width.
+LIST_INDENT = 4
 
 
 def list_item_end(line: str) -> int | None:
     """Offset just past a list item's marker, or None if line is not one."""
+    if _THEMATIC_BREAK.match(line):
+        return None
     match = _LIST_ITEM.match(line)
     return match.end() if match else None
+
+
+def outdent_width(line: str) -> int:
+    """How many leading characters to remove to move line out one level."""
+    if line.startswith("\t"):
+        return 1
+    return min(len(line) - len(line.lstrip(" ")), LIST_INDENT)
+
+
+def in_code_fence(lines_before: list[str]) -> bool:
+    """Whether the line after lines_before is inside a ``` or ~~~ block."""
+    fence = None
+    for line in lines_before:
+        match = _FENCE.match(line)
+        if match is None:
+            continue
+        marker = match.group(1)
+        if fence is None:
+            fence = marker
+        elif marker[0] == fence[0] and len(marker) >= len(fence) and not line[match.end():].strip():
+            fence = None
+    return fence is not None
 
 
 def list_enter(line: str, column: int) -> tuple[str, str] | None:
@@ -92,29 +123,62 @@ def list_enter(line: str, column: int) -> tuple[str, str] | None:
 
     ("continue", text): insert text, which starts the next list item.
     ("end", marker): the item is empty, so remove its marker to leave the list.
+    ("outdent", indent): the empty item is nested, so remove this much of its
+        indentation to move it out one level.
     None: not in a list item; let the editor handle the key.
     """
     match = _LIST_ITEM.match(line)
-    if match is None or column < match.end():
+    if match is None or column < match.end() or _THEMATIC_BREAK.match(line):
         return None
-    if not line[match.end():].strip():
-        return "end", match.group(0)
     indent, bullet, number, delimiter, spacing, task = match.groups()
+    if not line[match.end():].strip():
+        width = outdent_width(line)
+        return ("outdent", line[:width]) if width else ("end", match.group(0))
     marker = bullet if bullet else f"{int(number) + 1}{delimiter}"
     return "continue", f"\n{indent}{marker}{spacing}{'[ ] ' if task else ''}"
 
 
+def _split_marker(line: str) -> tuple[str, str]:
+    """(indentation, text) of a line, without its bullet or number."""
+    for pattern in (_BULLET, _NUMBERED):
+        match = pattern.match(line)
+        if match and not _THEMATIC_BREAK.match(line):
+            return match.group(1), line[match.end():]
+    text = line.lstrip()
+    return line[:len(line) - len(text)], text
+
+
 def toggle_bullets(lines: list[str]) -> list[str]:
-    """Add "- " to lines, or remove it when every non-blank line has it."""
+    """Make the lines a bullet list, or plain text again when every one of
+    them already is a bullet. Blank lines are left alone; numbers become
+    bullets."""
     content = [line for line in lines if line.strip()]
-    if content and all(line.startswith("- ") for line in content):
-        return [line[2:] if line.startswith("- ") else line for line in lines]
-    return ["- " + line for line in lines]
+    if not content:
+        return ["- " + line for line in lines]  # on an empty line: start a list
+    if all(_BULLET.match(line) for line in content):
+        return [_BULLET.sub(r"\1", line, count=1) for line in lines]
+    result = []
+    for line in lines:
+        if line.strip() and not _BULLET.match(line):
+            indent, text = _split_marker(line)
+            line = f"{indent}- {text}"
+        result.append(line)
+    return result
 
 
 def toggle_numbering(lines: list[str]) -> list[str]:
-    """Number lines 1., 2., …, or remove the numbers when all have one."""
+    """Number the lines 1., 2., …, or remove the numbers when all have one.
+    Blank lines are left alone and not counted; bullets become numbers."""
     content = [line for line in lines if line.strip()]
-    if content and all(_NUMBERED.match(line) for line in content):
+    if not content:
+        return [f"{number}. {line}" for number, line in enumerate(lines, start=1)]
+    if all(_NUMBERED.match(line) for line in content):
         return [_NUMBERED.sub(r"\1", line, count=1) for line in lines]
-    return [f"{number}. {line}" for number, line in enumerate(lines, start=1)]
+    result, number = [], 0
+    for line in lines:
+        if line.strip():
+            number += 1
+            indent, text = _split_marker(line)
+            line = f"{indent}{number}. {text}"
+        result.append(line)
+    return result

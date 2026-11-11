@@ -168,7 +168,7 @@ def test_one_preview_follows_the_active_tab(preview, window, tmp_path):
 def test_preview_is_not_rendered_while_hidden(preview, window, tmp_path):
     rendered = []
     original = preview.render
-    preview.render = lambda text, scroll=None: (rendered.append(text), original(text, scroll))[1]
+    preview.render = lambda text, *args: (rendered.append(text), original(text, *args))[1]
     try:
         window.activate_action("win.editor-only", None)
         window.editor.set_text("# hidden")

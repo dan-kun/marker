@@ -31,6 +31,12 @@
       font-size: 16px;
       line-height: 1.6;
     }
+    /* A file that is not Markdown, shown as source text */
+    .markdown-body pre.source-file {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+    }
     .markdown-body .task-list-item { list-style-type: none; }
     .markdown-body .task-list-item input { margin: 0 0.35em 0.2em -1.4em; vertical-align: middle; }
     .markdown-body {
@@ -68,7 +74,6 @@
   <script src="js/markdown-it.min.js"></script>
   <script src="js/markdown-it-footnote.min.js"></script>
   <script src="js/katex.min.js"></script>
-  <script src="js/auto-render.min.js"></script>
   <script src="js/highlight.min.js"></script>
   <!-- mermaid.min.js (2.7 MB) is loaded on demand: see loadMermaid() -->
 
@@ -77,7 +82,7 @@
     // Raw HTML in documents is only enabled when DOMPurify is available to
     // strip scripts, event handlers and other active content from it.
     const sanitize = window.DOMPurify
-      ? (html) => DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
+      ? (html) => DOMPurify.sanitize(html, { ADD_ATTR: ['target'], FORBID_TAGS: ['style'] })
       : null;
 
     const md = window.markdownit({
@@ -103,6 +108,99 @@
     if (window.markdownitFootnote) {
       md.use(markdownitFootnote);
     }
+
+    // ── Math ───────────────────────────────────────────────────────────────
+    // Formulas are picked out while parsing, before Markdown can read their
+    // backslashes and asterisks as escapes and emphasis. They are typeset by
+    // KaTeX after sanitizing (see render()).
+    function mathInline(state, silent) {
+      const src = state.src, start = state.pos;
+      let open, close, display = false;
+      if (src.charCodeAt(start) === 0x24 /* $ */) {
+        display = src.charCodeAt(start + 1) === 0x24;
+        open = close = display ? '$$' : '$';
+      } else if (src.startsWith('\\(', start)) {
+        open = '\\('; close = '\\)';
+      } else if (src.startsWith('\\[', start)) {
+        open = '\\['; close = '\\]'; display = true;
+      } else {
+        return false;
+      }
+      let end = start + open.length;
+      for (;;) {
+        end = src.indexOf(close, end);
+        if (end === -1) return false;
+        let slashes = 0;
+        while (src.charCodeAt(end - 1 - slashes) === 0x5C) slashes++;
+        if (close[0] !== '$' || slashes % 2 === 0) break;
+        end += 1;  // "\$" inside a formula is a dollar sign, not its end
+      }
+      const content = src.slice(start + open.length, end);
+      if (!content.trim()) return false;
+      if (open === '$') {
+        // Pandoc's rule, so that "from $5 to $50" stays text: no space just
+        // inside the dollars, and no digit right after the closing one
+        if (/^\s|\s$/.test(content)) return false;
+        if (/[0-9]/.test(src.charAt(end + 1))) return false;
+      }
+      if (!silent) {
+        const token = state.push(display ? 'math_display' : 'math_inline', 'math', 0);
+        token.content = content;
+      }
+      state.pos = end + close.length;
+      return true;
+    }
+
+    function mathBlock(state, startLine, endLine, silent) {
+      if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+      const lineText = (line) =>
+        state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+      const first = lineText(startLine);
+      const close = first.startsWith('$$') ? '$$' : first.startsWith('\\[') ? '\\]' : null;
+      if (!close) return false;
+
+      let rest = first.slice(2);
+      let line = startLine;
+      const lines = [];
+      if (rest.trimEnd().endsWith(close)) {
+        rest = rest.trimEnd();
+        lines.push(rest.slice(0, rest.length - 2));
+      } else if (rest.includes(close)) {
+        return false;  // "$$x$$ and more text": inline math in a paragraph
+      } else {
+        lines.push(rest);
+        let closed = false;
+        for (line = startLine + 1; line < endLine; line++) {
+          if (state.sCount[line] < state.blkIndent) break;
+          const text = lineText(line).trimEnd();
+          if (text.endsWith(close)) {
+            lines.push(text.slice(0, text.length - 2));
+            closed = true;
+            break;
+          }
+          lines.push(text);
+        }
+        if (!closed) return false;
+      }
+      if (silent) return true;
+      const token = state.push('math_display', 'math', 0);
+      token.block = true;
+      token.content = lines.join('\n');
+      token.map = [startLine, line + 1];
+      state.line = line + 1;
+      return true;
+    }
+
+    md.inline.ruler.before('escape', 'math', mathInline);
+    md.block.ruler.before('fence', 'math', mathBlock,
+                          { alt: ['paragraph', 'reference', 'blockquote', 'list'] });
+    md.renderer.rules.math_inline = (tokens, i) =>
+      '<span class="math-inline">' + md.utils.escapeHtml(tokens[i].content) + '</span>';
+    md.renderer.rules.math_display = (tokens, i, options, env, self) => {
+      const tag = tokens[i].block ? 'div' : 'span';
+      return `<${tag} class="math-display"${self.renderAttrs(tokens[i])}>` +
+        md.utils.escapeHtml(tokens[i].content) + `</${tag}>` + (tokens[i].block ? '\n' : '');
+    };
 
     // Heading ids in GitHub's style ("My Title" → #my-title), so that
     // in-document links such as [Install](#install) have a target.
@@ -176,9 +274,12 @@
     const MERMAID_CACHE_SIZE = 100;
     const _mermaidCache = new Map();
     let _mermaidLoading = null;
+    // Not "is window.mermaid set?": a heading called "Mermaid" gets
+    // id="mermaid", and the browser exposes that element under the same name.
+    let _mermaidReady = false;
 
     function initMermaid() {
-      if (!window.mermaid) return;
+      if (!_mermaidReady) return;
       mermaid.initialize({
         startOnLoad: false,
         theme: _isDark ? 'dark' : 'default',
@@ -191,7 +292,7 @@
         _mermaidLoading = new Promise((resolve) => {
           const script = document.createElement('script');
           script.src = 'js/mermaid.min.js';
-          script.onload = () => { initMermaid(); resolve(true); };
+          script.onload = () => { _mermaidReady = true; initMermaid(); resolve(true); };
           script.onerror = () => resolve(false);
           document.head.appendChild(script);
         });
@@ -221,6 +322,10 @@
       document.getElementById('marker-theme').href =
         isDark ? 'css/preview-dark.css' : 'css/preview-light.css';
       initMermaid();
+      // Diagrams are drawn in the theme's colours: draw them again
+      if (_last && document.querySelector('#content .mermaid')) {
+        render(_last.text, _last.baseUri, undefined, _last.docId, _last.syntax);
+      }
     }
 
     // ── Relative URLs ──────────────────────────────────────────────────────
@@ -242,10 +347,31 @@
       }
     }
 
+    // ── Files that are not Markdown ────────────────────────────────────────
+    // Shown as they are, with syntax colours, instead of being read as
+    // Markdown (which turns "# comment" in a script into a heading).
+    const MAX_HIGHLIGHT_CHARS = 300000;
+
+    function sourceHtml(text, syntax) {
+      let body = null;
+      if (window.hljs && syntax !== 'plaintext' && hljs.getLanguage(syntax) &&
+          text.length <= MAX_HIGHLIGHT_CHARS) {
+        try {
+          body = hljs.highlight(text, { language: syntax, ignoreIllegals: true }).value;
+        } catch (_) {}
+      }
+      if (body === null) body = md.utils.escapeHtml(text);
+      const lines = text.split('\n').length;
+      return `<pre class="hljs source-file" data-line="0" data-line-end="${lines}"><code>${body}</code></pre>`;
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────
     // scrollPercent (0..1), when given, is where the page is left after
     // rendering; otherwise the document (docId) returns to where it was.
-    async function render(markdownText, baseUri, scrollPercent, docId) {
+    // syntax, when given, shows the text as source code in that language.
+    let _last = null;
+
+    async function render(markdownText, baseUri, scrollPercent, docId, syntax) {
       const generation = ++_renderGeneration;
       const emptyState = document.getElementById('empty-state');
       const content = document.getElementById('content');
@@ -255,6 +381,8 @@
       if (typeof scrollPercent === 'number' || Array.isArray(scrollPercent)) scrollTarget = scrollPercent;
       else if (_scrollByDoc.has(docId)) scrollTarget = _scrollByDoc.get(docId);
       else if (docId !== _docId) scrollTarget = 0;
+
+      _last = { text: markdownText, baseUri, docId, syntax };
 
       if (!markdownText || markdownText.trim() === '') {
         _docId = docId;
@@ -270,9 +398,13 @@
       // Render into a detached element so a slow render never touches the
       // DOM after a newer one has started.
       const fragment = document.createElement('div');
-      const html = md.render(markdownText);
-      fragment.innerHTML = sanitize ? sanitize(html) : html;
-      resolveRelativeUrls(fragment, baseUri);
+      if (syntax) {
+        fragment.innerHTML = sourceHtml(markdownText, syntax);
+      } else {
+        const html = md.render(markdownText);
+        fragment.innerHTML = sanitize ? sanitize(html) : html;
+        resolveRelativeUrls(fragment, baseUri);
+      }
 
       const diagrams = fragment.querySelectorAll('pre.mermaid-source');
       if (diagrams.length > 0 && await loadMermaid()) {
@@ -293,16 +425,15 @@
         }
       }
 
-      if (window.renderMathInElement) {
-        renderMathInElement(fragment, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false },
-            { left: '\\(', right: '\\)', display: false },
-            { left: '\\[', right: '\\]', display: true },
-          ],
-          throwOnError: false,
-        });
+      if (window.katex) {
+        for (const el of fragment.querySelectorAll('.math-inline, .math-display')) {
+          try {
+            katex.render(el.textContent, el, {
+              displayMode: el.classList.contains('math-display'),
+              throwOnError: false,
+            });
+          } catch (_) {}  // leave the formula's source showing
+        }
       }
 
       if (generation !== _renderGeneration) return;

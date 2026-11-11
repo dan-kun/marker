@@ -10,7 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("WebKit", "6.0")
 
-from gi.repository import Adw, Gdk, Gio, GObject, Gtk, WebKit
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, WebKit
 
 from .filetypes import is_shown
 
@@ -54,7 +54,7 @@ class MarkdownPreview(Gtk.Box):
 
     __gsignals__ = {
         # A link to a local text file was clicked
-        "open-file": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        "open-file": (GObject.SignalFlags.RUN_LAST, None, (object,)),
         # A block was double-clicked: its 0-based line in the source
         "line-activated": (GObject.SignalFlags.RUN_LAST, None, (int,)),
     }
@@ -65,6 +65,9 @@ class MarkdownPreview(Gtk.Box):
         self._ready = False
         self._disposed = False
         self._text: str | None = None
+        self._syntax: str | None = None  # None: Markdown; else the text is shown as source code
+        self._render_running = False     # the page is busy with a render
+        self._render_waiting = False     # ...and newer content arrived meanwhile
         # Scroll to apply with the next render: a fraction, or (line, fraction)
         self._scroll: float | tuple[float, float] | None = None
         self._doc_id = 0  # which document is showing; the page keeps a scroll position per id
@@ -129,6 +132,7 @@ class MarkdownPreview(Gtk.Box):
     def _on_load_changed(self, webview, event):
         if event == WebKit.LoadEvent.STARTED:
             self._ready = False
+            self._render_running = self._render_waiting = False
         elif event == WebKit.LoadEvent.FINISHED:
             self._ready = True
             self._js_set_theme()
@@ -188,20 +192,42 @@ class MarkdownPreview(Gtk.Box):
     def _js_render(self):
         if not self._ready or self._disposed:
             return  # flushed when the page finishes loading
-        args = (self._text, self._base_uri, self._scroll, self._doc_id)
+        if self._render_running:
+            # Rendering a large document takes longer than the pause between
+            # edits. Without this, every edit queued its own full render.
+            self._render_waiting = True
+            return
+        args = (self._text, self._base_uri, self._scroll, self._doc_id, self._syntax)
         self._scroll = None
-        self._js("render({}, {}, {}, {})".format(*map(json.dumps, args)))
+        self._render_running = True
+        self._webview.evaluate_javascript(
+            "render({}, {}, {}, {}, {})".format(*map(json.dumps, args)),
+            -1, None, None, None, self._on_render_done, None,
+        )
+
+    def _on_render_done(self, webview, result, _data):
+        try:
+            webview.evaluate_javascript_finish(result)
+        except GLib.Error:
+            pass  # the page went away; it renders again when it is back
+        self._render_running = False
+        if self._render_waiting:
+            self._render_waiting = False
+            self._js_render()
 
     def _js_set_theme(self):
         self._js(f"setTheme({json.dumps(self._is_dark)})")
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def render(self, text: str, scroll: float | tuple[float, float] | None = None):
+    def render(self, text: str, scroll: float | tuple[float, float] | None = None,
+               syntax: str | None = None):
         """Render text. scroll positions the page once it is rendered: a
         fraction (0..1), or (source line, fraction) to follow the editor.
-        None keeps the current position."""
+        None keeps the current position. With syntax, the text is not
+        Markdown and is shown as source code in that highlight.js language."""
         self._text = text
+        self._syntax = syntax
         if scroll is not None:
             self._scroll = scroll
         self._js_render()
@@ -215,7 +241,8 @@ class MarkdownPreview(Gtk.Box):
                 self._js_render()
 
     def show_document(self, doc_id: int, text: str, directory: str | None,
-                      scroll: float | tuple[float, float] | None = None):
+                      scroll: float | tuple[float, float] | None = None,
+                      syntax: str | None = None):
         """Switch the preview to another document in a single render.
 
         With scroll=None the page returns to where this document (doc_id)
@@ -224,7 +251,7 @@ class MarkdownPreview(Gtk.Box):
         self._doc_id = doc_id
         self._scroll = None
         self.set_base_dir(directory, rerender=False)
-        self.render(text, scroll)
+        self.render(text, scroll, syntax)
 
     def forget_document(self, doc_id: int):
         self._js(f"forgetDocument({int(doc_id)})")
@@ -237,6 +264,9 @@ class MarkdownPreview(Gtk.Box):
         page. fraction is the editor's overall position, so that both panes
         reach the start and the end of the document together."""
         self._js(f"scrollToLine({line:.3f}, {fraction:.4f})")
+
+    def grab_focus(self) -> bool:
+        return self._webview.grab_focus()
 
     def get_webview(self) -> WebKit.WebView:
         return self._webview

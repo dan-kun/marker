@@ -15,6 +15,7 @@ DEFAULTS = {
     "minimap": True,
     "view-mode": "split",
     "zoom": 1.0,
+    "split": 0.5,     # share of the width the editor takes in split view
     "folders": [],    # folders shown in the sidebar
     "files": [],      # open documents, in tab order
     "active": 0,      # index into "files" of the selected tab
@@ -32,6 +33,8 @@ def _valid(key: str, value) -> bool:
         return value in _VIEW_MODES
     if key == "zoom":
         return type(value) in (int, float) and 0.5 <= value <= 3.0
+    if key == "split":
+        return type(value) in (int, float) and 0.1 <= value <= 0.9
     if key in ("folders", "files"):
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
     if key == "active":

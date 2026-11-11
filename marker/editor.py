@@ -1,6 +1,7 @@
 """GtkSourceView-based markdown editor."""
 
 import itertools
+import os
 import re
 
 import gi
@@ -9,10 +10,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Adw, Gdk, GObject, Gtk, GtkSource
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk, GtkSource
 
 from . import mdedit
+from .filetypes import is_markdown
 from .shortcuts import editor_accels
+from .titles import display
 
 _editor_ids = itertools.count(1)
 
@@ -36,6 +39,8 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         self._css_provider = Gtk.CssProvider()
         self._css_name = f"marker-editor-{next(_editor_ids)}"
         self._display = None
+        self._list_keys = True  # Enter and Tab edit lists (off in source code)
+        self._scroll_retry = 0
 
         self._setup_buffer()
         self._setup_view()
@@ -140,6 +145,9 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         if self._key_controller is not None:
             self._view.remove_controller(self._key_controller)
             self._key_controller = None
+        if self._scroll_retry:
+            GLib.source_remove(self._scroll_retry)
+            self._scroll_retry = 0
 
     # ── Signal handlers ────────────────────────────────────────────────────
 
@@ -172,12 +180,22 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         it = self._buffer.get_iter_at_mark(self._buffer.get_insert())
         return it.get_line() + 1, it.get_line_offset() + 1
 
-    def set_language(self, lang_id: str | None):
-        if lang_id:
-            lang_manager = GtkSource.LanguageManager.get_default()
-            self._buffer.set_language(lang_manager.get_language(lang_id))
+    def set_file_type(self, path: str | None):
+        """Highlight the text as Markdown (untitled documents included) or
+        as the language its file name suggests."""
+        if path is None or is_markdown(path):
+            language = self._lang_md
         else:
-            self._buffer.set_language(None)
+            manager = GtkSource.LanguageManager.get_default()
+            language = manager.guess_language(display(os.path.basename(path)), None)
+        self._buffer.set_language(language)
+        # List editing suits prose (Markdown, plain text), not source code
+        self._list_keys = language is None or language is self._lang_md
+
+    @property
+    def language_name(self) -> str:
+        language = self._buffer.get_language()
+        return language.get_name() if language is not None else "Plain Text"
 
     def apply_settings(self, settings):
         self._font_family = settings["font-family"]
@@ -216,15 +234,50 @@ class MarkdownEditor(Gtk.ScrolledWindow):
         it = self._iter_at_line(line)
         it.forward_chars(max(0, min(column - 1, it.get_chars_in_line() - 1)))
         buf.place_cursor(it)
-        self._view.scroll_mark_onscreen(buf.get_insert())
+        self._scroll_to_cursor(align=False)
 
     def goto_line(self, line: int):
         """Move the cursor to a 0-based line and scroll it into view."""
         line = max(0, min(line, self._buffer.get_line_count() - 1))
         it = self._iter_at_line(line)
         self._buffer.place_cursor(it)
-        self._view.scroll_to_iter(it, 0.0, True, 0.0, 0.3)
+        self._scroll_to_cursor(align=True)
         self._view.grab_focus()
+
+    def _cursor_is_visible(self) -> bool:
+        cursor = self._buffer.get_iter_at_mark(self._buffer.get_insert())
+        line, visible = self._view.get_iter_location(cursor), self._view.get_visible_rect()
+        return visible.y <= line.y and line.y + line.height <= visible.y + visible.height
+
+    def _scroll_to_cursor(self, align: bool):
+        """Bring the cursor on screen; with align, a third of the way down.
+
+        A view that was created or filled a moment ago has not measured its
+        lines yet, and a scroll asked for now stops short of a far-away
+        line. So the result is checked over the next frames and the scroll
+        repeated until the cursor really is on screen.
+        """
+        def scroll():
+            if align:
+                self._view.scroll_to_mark(self._buffer.get_insert(), 0.0, True, 0.0, 0.3)
+            else:
+                self._view.scroll_mark_onscreen(self._buffer.get_insert())
+
+        attempts = 20
+
+        def check():
+            nonlocal attempts
+            attempts -= 1
+            if attempts <= 0 or (self._view.get_height() > 1 and self._cursor_is_visible()):
+                self._scroll_retry = 0
+                return GLib.SOURCE_REMOVE
+            scroll()
+            return GLib.SOURCE_CONTINUE
+
+        if self._scroll_retry:
+            GLib.source_remove(self._scroll_retry)
+        scroll()
+        self._scroll_retry = GLib.timeout_add(40, check)
 
     def _iter_at_line(self, line: int):
         result = self._buffer.get_iter_at_line(line)
@@ -266,6 +319,13 @@ class MarkdownEditor(Gtk.ScrolledWindow):
     def insert_code(self):
         selection = self.get_selection()
         if selection and "\n" in self._buffer.get_text(*selection, True):
+            # A fence only works on lines of its own: take whole lines, even
+            # when the selection starts or ends in the middle of one.
+            first, last = self._selected_line_range()
+            end = self._iter_at_line(last)
+            if not end.ends_line():
+                end.forward_to_line_end()
+            self._buffer.select_range(self._iter_at_line(first), end)
             self._toggle_wrap("```\n", "\n```")
             return
         self._toggle_wrap("`", "`")
@@ -401,7 +461,7 @@ class MarkdownEditor(Gtk.ScrolledWindow):
 
     def _on_key_pressed(self, controller, keyval, keycode, state):
         buf = self._buffer
-        if buf.get_has_selection() or not self._view.get_editable():
+        if not self._list_keys or buf.get_has_selection() or not self._view.get_editable():
             return False
         modifiers = state & (
             Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK
@@ -416,35 +476,42 @@ class MarkdownEditor(Gtk.ScrolledWindow):
             return self._indent_list_item(unindent=shift or keyval == Gdk.KEY_ISO_Left_Tab)
         return False
 
+    def _in_code_fence(self, line_start: Gtk.TextIter) -> bool:
+        before = self._buffer.get_text(self._buffer.get_start_iter(), line_start, True)
+        return mdedit.in_code_fence(before.split("\n")[:-1])
+
     def _continue_list(self) -> bool:
-        """Enter in a list item starts the next one; in an empty item it ends the list."""
+        """Enter in a list item starts the next one; in an empty item it
+        moves out one level, or ends the list."""
         buf = self._buffer
         line_start, line, column = self._current_line()
         action = mdedit.list_enter(line, column)
-        if action is None:
+        if action is None or self._in_code_fence(line_start):
             return False
         kind, text = action
         buf.begin_user_action()
         if kind == "continue":
             buf.insert_at_cursor(text)
-        else:
-            marker_end = line_start.copy()
-            marker_end.forward_chars(len(text))
-            buf.delete(line_start, marker_end)
+        else:  # "end" or "outdent": drop the marker, or one level of indentation
+            remove_end = line_start.copy()
+            remove_end.forward_chars(len(text))
+            buf.delete(line_start, remove_end)
         buf.end_user_action()
         self._view.scroll_mark_onscreen(buf.get_insert())
         return True
 
     def _indent_list_item(self, unindent: bool) -> bool:
         """Tab / Shift+Tab on a list item changes its nesting level."""
+        buf = self._buffer
         line_start, line, _ = self._current_line()
-        if mdedit.list_item_end(line) is None:
+        if mdedit.list_item_end(line) is None or self._in_code_fence(line_start):
             return False
-        line_end = line_start.copy()
-        if not line_end.ends_line():
-            line_end.forward_to_line_end()
+        buf.begin_user_action()
         if unindent:
-            self._view.unindent_lines(line_start, line_end)
+            remove_end = line_start.copy()
+            remove_end.forward_chars(mdedit.outdent_width(line))
+            buf.delete(line_start, remove_end)
         else:
-            self._view.indent_lines(line_start, line_end)
+            buf.insert(line_start, " " * mdedit.LIST_INDENT)
+        buf.end_user_action()
         return True

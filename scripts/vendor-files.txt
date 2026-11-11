@@ -6,7 +6,6 @@ js/purify.min.js|dompurify@3.2.7|dist/purify.min.js
 js/markdown-it.min.js|markdown-it@14.1.0|dist/markdown-it.min.js
 js/markdown-it-footnote.min.js|markdown-it-footnote@3.0.3|dist/markdown-it-footnote.min.js
 js/katex.min.js|katex@0.16.11|dist/katex.min.js
-js/auto-render.min.js|katex@0.16.11|dist/contrib/auto-render.min.js
 js/highlight.min.js|@highlightjs/cdn-assets@11.9.0|highlight.min.js
 js/mermaid.min.js|mermaid@11.12.0|dist/mermaid.min.js
 css-vendor/katex.min.css|katex@0.16.11|dist/katex.min.css

@@ -40,7 +40,10 @@ SHORTCUT_GROUPS: list[tuple[str, list[Shortcut]]] = [
     ("Formatting", [
         Shortcut("Bold", ("<Ctrl>b",), "win.format-bold", editor_only=True),
         Shortcut("Italic", ("<Ctrl>i",), "win.format-italic", editor_only=True),
-        Shortcut("Inline code / code block", ("<Ctrl>grave",), "win.format-code", editor_only=True),
+        # On layouts where ` is a dead key (Spanish, French, German…) the
+        # key reports dead_grave instead
+        Shortcut("Inline code / code block", ("<Ctrl>grave", "<Ctrl>dead_grave"),
+                 "win.format-code", editor_only=True),
         Shortcut("Link", ("<Ctrl>l",), "win.format-link", editor_only=True),
         Shortcut("Continue list / end list", ("Return",), label="Enter"),
         Shortcut("Indent / outdent list item", ("Tab",), label="Tab / Shift+Tab"),
@@ -112,6 +115,11 @@ class ShortcutsWindow(Gtk.Window):
             **kwargs,
         )
         self.set_child(self._build_content())
+        close_on_escape = Gtk.ShortcutController()
+        close_on_escape.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("Escape"), Gtk.NamedAction.new("window.close")
+        ))
+        self.add_controller(close_on_escape)
 
     def _build_content(self):
         scrolled = Gtk.ScrolledWindow()
@@ -146,7 +154,7 @@ class ShortcutsWindow(Gtk.Window):
 
                 keys = Gtk.Label(label=accel_label(shortcut), xalign=1)
                 keys.add_css_class("monospace")
-                keys.add_css_class("dim-label")
+                keys.add_css_class("marker-dim")
                 keys.add_css_class("caption")
                 row.append(keys)
 

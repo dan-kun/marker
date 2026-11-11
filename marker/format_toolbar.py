@@ -18,37 +18,33 @@ class FormatToolbar(Gtk.Box):
         self._build_ui()
 
     def _build_ui(self):
-        # Inline: Bold, Italic
+        # Letters where Markdown users expect letters (B, I, H1, </>), and
+        # symbolic icons for the rest. No emoji: they ignore the theme.
         inline = Gtk.Box()
         inline.add_css_class("linked")
-        inline.append(self._btn(icon="format-text-bold-symbolic",
-                                tip="Bold (Ctrl+B)", action="win.format-bold"))
-        inline.append(self._btn(icon="format-text-italic-symbolic",
-                                tip="Italic (Ctrl+I)", action="win.format-italic"))
+        inline.append(self._btn(markup="<b>B</b>", tip="Bold (Ctrl+B)", action="win.format-bold"))
+        inline.append(self._btn(markup="<i>I</i>", tip="Italic (Ctrl+I)", action="win.format-italic"))
+        inline.append(self._btn(markup="<tt>&lt;/&gt;</tt>", tip="Code (Ctrl+`)",
+                                action="win.format-code"))
+        inline.append(self._btn(icon="insert-link-symbolic", tip="Link (Ctrl+L)",
+                                action="win.format-link"))
         self.append(inline)
 
-        # Headings: H1, H2
         headings = Gtk.Box()
         headings.add_css_class("linked")
-        for level in (1, 2):
-            headings.append(self._btn(label=f"H{level}",
-                                      tip=f"Heading {level}",
+        for level in (1, 2, 3):
+            headings.append(self._btn(markup=f"H{level}", tip=f"Heading {level}",
                                       action="win.format-heading",
                                       target=GLib.Variant("i", level)))
         self.append(headings)
 
-        # Block / structure: code, bullet, numbered, link
-        block = Gtk.Box()
-        block.add_css_class("linked")
-        block.append(self._btn(label="</>", tip="Code (Ctrl+`)",
-                               action="win.format-code"))
-        block.append(self._btn(label="•", tip="Bullet list",
+        lists = Gtk.Box()
+        lists.add_css_class("linked")
+        lists.append(self._btn(icon="view-list-bullet-symbolic", tip="Bullet list",
                                action="win.format-bullet-list"))
-        block.append(self._btn(label="1.", tip="Numbered list",
+        lists.append(self._btn(icon="view-list-ordered-symbolic", tip="Numbered list",
                                action="win.format-numbered-list"))
-        block.append(self._btn(label="🔗", tip="Link (Ctrl+L)",
-                               action="win.format-link"))
-        self.append(block)
+        self.append(lists)
 
     def _btn(
         self,
@@ -56,7 +52,7 @@ class FormatToolbar(Gtk.Box):
         tip: str,
         action: str,
         icon: str | None = None,
-        label: str | None = None,
+        markup: str | None = None,
         target: GLib.Variant | None = None,
     ) -> Gtk.Button:
         # Only set the property that was given: icon_name=None triggers a
@@ -64,8 +60,8 @@ class FormatToolbar(Gtk.Box):
         btn = Gtk.Button(tooltip_text=tip, action_name=action)
         if icon:
             btn.set_icon_name(icon)
-        elif label:
-            btn.set_label(label)
+        elif markup:
+            btn.set_child(Gtk.Label(label=markup, use_markup=True, width_chars=2))
         if target is not None:
             btn.set_action_target_value(target)
         return btn
