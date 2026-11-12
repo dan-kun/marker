@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -11,6 +12,23 @@ jobs:
       - uses: actions/checkout@v5
       - name: Ruff
         run: pipx run ruff==0.15.8 check .
+
+  typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install PyGObject
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-gi python3-gi-cairo python3-venv
+      - name: Pyright
+        run: |
+          /usr/bin/python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install pyright==1.1.414
+          # --no-deps: the stubs depend on PyGObject, which apt already provides
+          .venv/bin/pip install --no-deps --config-settings=config=Gtk4,Gdk4,GtkSource5 \
+            pygobject-stubs==2.20.0
+          .venv/bin/pyright --pythonpath .venv/bin/python
 
   test:
     runs-on: ubuntu-24.04
@@ -22,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
-            gir1.2-gtksource-5 gir1.2-webkit-6.0 python3-pytest xvfb
+            gir1.2-gtksource-5 gir1.2-webkit-6.0 python3-pytest xvfb xdotool
 
       - name: Fetch preview dependencies
         run: bash scripts/fetch-deps.sh

@@ -105,8 +105,14 @@ def app():
 
 @pytest.fixture
 def window(app):
+    from marker.utils import config_path
     from marker.window import MarkerWindow
 
+    # Every test starts from the default layout, not the previous test's
+    try:
+        os.unlink(config_path("session.json"))
+    except FileNotFoundError:
+        pass
     win = MarkerWindow(application=app)
     win.present()
     iterate(0.2)

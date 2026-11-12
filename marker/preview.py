@@ -10,7 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("WebKit", "6.0")
 
-from gi.repository import Adw, Gdk, Gio, GObject, Gtk, WebKit
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, WebKit
 
 from .filetypes import is_shown
 
@@ -31,6 +31,8 @@ function render(text) {
 }
 function setTheme(isDark) {}
 function setScrollPercent(pct) {}
+function scrollToLine(line, pct) {}
+function forgetDocument(id) {}
 </script>
 </body></html>"""
 
@@ -44,20 +46,31 @@ def _preview_uri() -> str:
 
 
 class MarkdownPreview(Gtk.Box):
-    """WebKit preview panel for rendered Markdown."""
+    """WebKit preview panel for rendered Markdown.
+
+    A window has one preview, shared by all its tabs: each WebView runs its
+    own web process (about 100 MB), and only the active tab is ever visible.
+    """
 
     __gsignals__ = {
         # A link to a local text file was clicked
-        "open-file": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        "open-file": (GObject.SignalFlags.RUN_LAST, None, (object,)),
+        # A block was double-clicked: its 0-based line in the source
+        "line-activated": (GObject.SignalFlags.RUN_LAST, None, (int,)),
     }
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
-        self._zoom_level = 1.0
         self._ready = False
         self._disposed = False
         self._text: str | None = None
+        self._syntax: str | None = None  # None: Markdown; else the text is shown as source code
+        self._render_running = False     # the page is busy with a render
+        self._render_waiting = False     # ...and newer content arrived meanwhile
+        # Scroll to apply with the next render: a fraction, or (line, fraction)
+        self._scroll: float | tuple[float, float] | None = None
+        self._doc_id = 0  # which document is showing; the page keeps a scroll position per id
         self._base_uri: str | None = None
         self._page_uri = _preview_uri()
 
@@ -83,6 +96,15 @@ class MarkdownPreview(Gtk.Box):
         settings.set_javascript_can_open_windows_automatically(False)
         settings.set_enable_developer_extras(False)
 
+        # The page reports double-clicked blocks through this message handler.
+        # It only carries a line number; documents cannot run scripts anyway.
+        content_manager = self._webview.get_user_content_manager()
+        content_manager.register_script_message_handler("marker", None)
+        self._content_manager = content_manager
+        self._message_handler = content_manager.connect(
+            "script-message-received::marker", self._on_script_message
+        )
+
         self._webview_handlers = [
             self._webview.connect("load-changed", self._on_load_changed),
             self._webview.connect("decide-policy", self._on_decide_policy),
@@ -102,6 +124,7 @@ class MarkdownPreview(Gtk.Box):
         for handler in self._webview_handlers:
             self._webview.disconnect(handler)
         self._webview_handlers = []
+        self._content_manager.disconnect(self._message_handler)
         self._webview.terminate_web_process()
 
     # ── WebView events ─────────────────────────────────────────────────────
@@ -109,11 +132,16 @@ class MarkdownPreview(Gtk.Box):
     def _on_load_changed(self, webview, event):
         if event == WebKit.LoadEvent.STARTED:
             self._ready = False
+            self._render_running = self._render_waiting = False
         elif event == WebKit.LoadEvent.FINISHED:
             self._ready = True
             self._js_set_theme()
             if self._text is not None:
                 self._js_render()
+
+    def _on_script_message(self, content_manager, value):
+        if value.is_number():
+            self.emit("line-activated", max(0, value.to_int32()))
 
     def _on_web_process_terminated(self, webview, reason):
         if not self._disposed:
@@ -144,7 +172,8 @@ class MarkdownPreview(Gtk.Box):
             return
         if scheme not in _EXTERNAL_SCHEMES:
             return
-        window = self.get_root()
+        root = self.get_root()
+        window = root if isinstance(root, Gtk.Window) else None
         if hasattr(Gtk, "UriLauncher"):  # GTK ≥ 4.10
             Gtk.UriLauncher.new(uri).launch(window, None, None, None)
         else:
@@ -161,39 +190,86 @@ class MarkdownPreview(Gtk.Box):
             self._webview.evaluate_javascript(script, -1, None, None, None, None, None)
 
     def _js_render(self):
-        self._js(f"render({json.dumps(self._text)}, {json.dumps(self._base_uri)})")
+        if not self._ready or self._disposed:
+            return  # flushed when the page finishes loading
+        if self._render_running:
+            # Rendering a large document takes longer than the pause between
+            # edits. Without this, every edit queued its own full render.
+            self._render_waiting = True
+            return
+        args = (self._text, self._base_uri, self._scroll, self._doc_id, self._syntax)
+        self._scroll = None
+        self._render_running = True
+        self._webview.evaluate_javascript(
+            "render({}, {}, {}, {}, {})".format(*map(json.dumps, args)),
+            -1, None, None, None, self._on_render_done, None,
+        )
+
+    def _on_render_done(self, webview, result, _data):
+        try:
+            webview.evaluate_javascript_finish(result)
+        except GLib.Error:
+            pass  # the page went away; it renders again when it is back
+        self._render_running = False
+        if self._render_waiting:
+            self._render_waiting = False
+            self._js_render()
 
     def _js_set_theme(self):
         self._js(f"setTheme({json.dumps(self._is_dark)})")
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def render(self, text: str):
+    def render(self, text: str, scroll: float | tuple[float, float] | None = None,
+               syntax: str | None = None):
+        """Render text. scroll positions the page once it is rendered: a
+        fraction (0..1), or (source line, fraction) to follow the editor.
+        None keeps the current position. With syntax, the text is not
+        Markdown and is shown as source code in that highlight.js language."""
         self._text = text
-        self._js_render()  # no-op until the page has loaded; flushed on FINISHED
+        self._syntax = syntax
+        if scroll is not None:
+            self._scroll = scroll
+        self._js_render()
 
-    def set_base_dir(self, directory: str | None):
+    def set_base_dir(self, directory: str | None, rerender: bool = True):
         """Resolve relative links and images against the document's folder."""
         uri = Gio.File.new_for_path(directory).get_uri().rstrip("/") + "/" if directory else None
         if uri != self._base_uri:
             self._base_uri = uri
-            if self._text is not None:
+            if rerender and self._text is not None:
                 self._js_render()
+
+    def show_document(self, doc_id: int, text: str, directory: str | None,
+                      scroll: float | tuple[float, float] | None = None,
+                      syntax: str | None = None):
+        """Switch the preview to another document in a single render.
+
+        With scroll=None the page returns to where this document (doc_id)
+        was last left.
+        """
+        self._doc_id = doc_id
+        self._scroll = None
+        self.set_base_dir(directory, rerender=False)
+        self.render(text, scroll, syntax)
+
+    def forget_document(self, doc_id: int):
+        self._js(f"forgetDocument({int(doc_id)})")
 
     def scroll_to_fraction(self, fraction: float):
         self._js(f"setScrollPercent({fraction:.4f})")
 
+    def scroll_to_line(self, line: float, fraction: float):
+        """Bring source `line` (0-based, may be fractional) to the top of the
+        page. fraction is the editor's overall position, so that both panes
+        reach the start and the end of the document together."""
+        self._js(f"scrollToLine({line:.3f}, {fraction:.4f})")
+
+    def grab_focus(self) -> bool:
+        return self._webview.grab_focus()
+
     def get_webview(self) -> WebKit.WebView:
         return self._webview
 
-    def zoom_in(self):
-        self._zoom_level = min(3.0, self._zoom_level + 0.1)
-        self._webview.set_zoom_level(self._zoom_level)
-
-    def zoom_out(self):
-        self._zoom_level = max(0.3, self._zoom_level - 0.1)
-        self._webview.set_zoom_level(self._zoom_level)
-
-    def zoom_reset(self):
-        self._zoom_level = 1.0
-        self._webview.set_zoom_level(self._zoom_level)
+    def set_zoom(self, level: float):
+        self._webview.set_zoom_level(max(0.3, min(3.0, level)))

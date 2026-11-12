@@ -9,12 +9,14 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GObject, Gtk
+from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from .editor import MarkdownEditor
 from .file_manager import FileManager
+from .filetypes import preview_syntax
 from .preview import MarkdownPreview
-from .split_view import SplitView
+from .split_view import Divider, SplitView
+from .titles import display, short_labels
 
 
 @dataclass(slots=True, eq=False)
@@ -22,7 +24,6 @@ class TabData:
     """Per-tab widgets and the signal handlers to drop when the tab closes."""
 
     editor: MarkdownEditor
-    preview: MarkdownPreview
     split_view: SplitView
     file_manager: FileManager
     page: Adw.TabPage
@@ -41,8 +42,8 @@ class TabManager(Gtk.Box):
 
     __gsignals__ = {
         "active-tab-changed": (GObject.SignalFlags.RUN_LAST, None, ()),
-        # Emitted after any tab loads a file from disk
-        "file-opened": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        # Emitted after a file is opened in a tab (not when it is reloaded)
+        "file-opened": (GObject.SignalFlags.RUN_LAST, None, (object,)),
     }
 
     def __init__(self, window, recents_manager, settings):
@@ -65,6 +66,14 @@ class TabManager(Gtk.Box):
         self.append(self._tab_bar)
         self.append(self._tab_view)
 
+        # One preview for the whole window, moved into whichever tab is active
+        self.preview = MarkdownPreview()
+        self.preview.connect("open-file", self._on_preview_open_file)
+        self.preview.connect("line-activated", self._on_preview_line_activated)
+        self._preview_tab: TabData | None = None
+        self._zoom = 1.0  # shared by every tab's editor and the preview
+        self.divider = Divider()  # ...and so is the editor/preview divider
+
         self._tab_view.connect("notify::selected-page", self._on_selected_page_changed)
         self._tab_view.connect("close-page", self._on_close_page)
         self._settings.connect("changed", self._on_settings_changed)
@@ -76,33 +85,67 @@ class TabManager(Gtk.Box):
     def _create_tab_data(self) -> TabData:
         editor = MarkdownEditor()
         editor.apply_settings(self._settings)
-        preview = MarkdownPreview()
-        split_view = SplitView(editor, preview)
+        editor.set_zoom(self._zoom)
+        active = self._active_tab()
+        # New tabs open in the view mode the user is currently working in
+        split_view = SplitView(editor, mode=active.split_view.get_mode() if active else "split",
+                               divider=self.divider)
         file_manager = FileManager(self._window, editor, self._recents_manager, self._settings)
 
         page = self._tab_view.append(split_view)
         page.set_title("Untitled")
         page.set_tooltip("")
 
-        tab = TabData(editor, preview, split_view, file_manager, page, [])
+        tab = TabData(editor, split_view, file_manager, page, [])
         tab.handlers = [
             (file_manager, file_manager.connect("file-changed", self._on_tab_file_changed, tab)),
             (file_manager, file_manager.connect("loaded", self._on_tab_loaded)),
-            (preview, preview.connect("open-file", self._on_preview_open_file)),
+            (file_manager, file_manager.connect("saved", self._on_tab_saved, tab)),
         ]
         self._tab_data[page] = tab
+        # Adw.TabView selects the first page as soon as it is appended,
+        # before the tab is registered above, so that notify is missed.
+        if self._tab_view.get_selected_page() is page:
+            self._move_preview_to(tab)
         return tab
 
+    def _update_titles(self):
+        """Name each tab after its file; tabs whose files share a name also
+        show the folder that tells them apart."""
+        paths = [t.file_manager.current_path for t in self._tab_data.values()]
+        labels = short_labels([p for p in paths if p])
+        for tab in self._tab_data.values():
+            path = tab.file_manager.current_path
+            title = labels[path] if path else "Untitled"
+            if tab.page.get_title() != title:
+                tab.page.set_title(title)
+
     def _on_tab_file_changed(self, fm, path, is_modified, tab):
-        tab.page.set_title(os.path.basename(path) if path else "Untitled")
-        tab.page.set_tooltip(path)
+        self._update_titles()
+        tab.page.set_tooltip(GLib.markup_escape_text(display(path)))  # the tooltip is markup
         tab.page.set_indicator_icon(
             Gio.ThemedIcon.new("media-record-symbolic") if is_modified else None
         )
-        tab.preview.set_base_dir(os.path.dirname(path) if path else None)
+        tab.split_view.set_document(os.path.dirname(path) if path else None,
+                                    preview_syntax(path or None))
 
     def _on_tab_loaded(self, fm, path):
         self.emit("file-opened", path)
+
+    def _on_tab_saved(self, fm, path, tab):
+        """After "Save As" onto a file that another tab has open, close that
+        tab if it has nothing to lose. One with unsaved edits stays and
+        reports the conflict through its own file monitor."""
+        for other in self.tabs():
+            other_path = other.file_manager.current_path
+            if other is not tab and other_path and _same_file(other_path, path) \
+                    and not other.file_manager.is_modified:
+                self._tab_view.close_page(other.page)
+
+    def _on_preview_line_activated(self, preview, line):
+        tab = self._active_tab()
+        if tab is not None:
+            tab.editor.goto_line(line)
 
     def _on_preview_open_file(self, preview, path):
         self.open_file(path)
@@ -112,7 +155,17 @@ class TabManager(Gtk.Box):
             tab.editor.apply_settings(settings)
 
     def _on_selected_page_changed(self, tab_view, param):
+        self._move_preview_to(self._active_tab())
         self.emit("active-tab-changed")
+
+    def _move_preview_to(self, tab: TabData | None):
+        if tab is self._preview_tab:
+            return
+        if self._preview_tab is not None:
+            self._preview_tab.split_view.detach_preview()
+        self._preview_tab = tab
+        if tab is not None:
+            tab.split_view.attach_preview(self.preview)
 
     def _on_close_page(self, tab_view, page):
         tab = self._tab_data.get(page)
@@ -135,9 +188,12 @@ class TabManager(Gtk.Box):
         for obj, handler in tab.handlers:
             obj.disconnect(handler)
         tab.handlers.clear()
+        if tab is self._preview_tab:
+            self._preview_tab = None
+        self.preview.forget_document(tab.split_view.doc_id)
+        self._update_titles()  # a remaining tab may no longer need its folder shown
         tab.file_manager.dispose()
         tab.split_view.dispose()
-        tab.preview.dispose()
         tab.editor.dispose()
 
     def _active_tab(self) -> TabData | None:
@@ -156,6 +212,17 @@ class TabManager(Gtk.Box):
     def modified_tabs(self) -> list[TabData]:
         return [t for t in self.tabs() if t.file_manager.is_modified]
 
+    @property
+    def zoom(self) -> float:
+        return self._zoom
+
+    def set_zoom(self, level: float):
+        """Zoom every editor and the preview together."""
+        self._zoom = max(0.5, min(3.0, round(level, 2)))
+        for tab in self._tab_data.values():
+            tab.editor.set_zoom(self._zoom)
+        self.preview.set_zoom(self._zoom)
+
     def select(self, tab: TabData):
         self._tab_view.set_selected_page(tab.page)
 
@@ -167,13 +234,18 @@ class TabManager(Gtk.Box):
 
     def find_tab(self, path: str) -> TabData | None:
         for tab in self._tab_data.values():
-            if tab.file_manager.current_path and _same_file(tab.file_manager.current_path, path):
+            current = tab.file_manager.current_path
+            if current and _same_file(current, path):
                 return tab
         return None
 
-    def open_file(self, path: str) -> TabData | None:
+    def open_file(self, path: str, create: bool = False) -> TabData | None:
         """Show path in a tab: the one already holding it, the current tab
-        if it is blank, or a new tab. Returns None if the file can't be read."""
+        if it is blank, or a new tab. Returns None if the file can't be read.
+
+        With create=True a path that does not exist yet (in an existing
+        folder) opens as an empty document that is created on first save.
+        """
         tab = self.find_tab(path)
         if tab is not None:
             self.select(tab)
@@ -185,7 +257,11 @@ class TabManager(Gtk.Box):
         else:
             tab, created = self._create_tab_data(), True
 
-        if not tab.file_manager.load(path):
+        path = os.path.abspath(path)
+        if create and not os.path.lexists(path) and os.path.isdir(os.path.dirname(path)):
+            tab.file_manager.start_new(path)
+            self.emit("file-opened", path)
+        elif not tab.file_manager.load(path):
             if created:
                 self._tab_view.close_page(tab.page)
             return None
@@ -222,10 +298,12 @@ class TabManager(Gtk.Box):
             self._tab_view.set_selected_page(self._tab_view.get_nth_page(index))
 
     def next_tab(self):
-        self._tab_view.select_next_page()
+        if not self._tab_view.select_next_page():
+            self.goto_tab(0)  # wrap around from the last tab
 
     def prev_tab(self):
-        self._tab_view.select_previous_page()
+        if not self._tab_view.select_previous_page():
+            self.goto_tab(self._tab_view.get_n_pages() - 1)
 
     # ── Properties ─────────────────────────────────────────────────────────
 
@@ -237,11 +315,6 @@ class TabManager(Gtk.Box):
     def active_editor(self) -> MarkdownEditor | None:
         tab = self._active_tab()
         return tab.editor if tab else None
-
-    @property
-    def active_preview(self) -> MarkdownPreview | None:
-        tab = self._active_tab()
-        return tab.preview if tab else None
 
     @property
     def active_split_view(self) -> SplitView | None:

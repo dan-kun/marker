@@ -1,8 +1,10 @@
 """Read and write text files without losing their encoding or line endings."""
 
 import codecs
+import errno
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 
@@ -39,7 +41,9 @@ def decode(data: bytes) -> tuple[str, str]:
         return data.decode("utf-8-sig"), "utf-8-sig"
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return data.decode("utf-16"), "utf-16"
-    if b"\x00" in data[:8192]:
+    # The whole file is checked: a NUL further in would otherwise load as
+    # text that the editor truncates there, and the next save would lose the rest.
+    if b"\x00" in data:
         raise BinaryFileError("file contains NUL bytes")
     try:
         return data.decode("utf-8"), "utf-8"
@@ -83,26 +87,59 @@ def _default_file_mode() -> int:
     return 0o666 & ~umask
 
 
+def _must_keep_identity(target: str) -> bool:
+    """True when the file has other hard links or belongs to another user."""
+    try:
+        info = os.stat(target)
+    except OSError:
+        return False
+    return info.st_nlink > 1 or info.st_uid != os.geteuid()
+
+
+def _is_read_only(target: str) -> bool:
+    """True for an existing file that is marked read-only. Replacing a file
+    only needs a writable folder, so the check has to be explicit."""
+    try:
+        mode = os.stat(target).st_mode
+    except OSError:
+        return False
+    return not stat.S_IMODE(mode) & 0o222 or not os.access(target, os.W_OK)
+
+
+def _write_in_place(target: str, data: bytes) -> int:
+    with open(target, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    return os.stat(target).st_mtime_ns
+
+
 def write_text_file(path: str, text: str, encoding: str = "utf-8", newline: str = "\n") -> int:
     """Atomically write text to path and return the new mtime (ns).
 
     The data goes to a temporary file in the same directory, which then
     replaces the target, so a failed write never truncates the original.
-    Raises UnicodeEncodeError if text cannot be represented in encoding.
+    Replacing would break a file's other hard links and hand a file owned
+    by someone else to the current user, so those are rewritten in place
+    instead (as GIO does). Raises UnicodeEncodeError if text cannot be
+    represented in encoding, and PermissionError for a read-only file.
     """
     data = text.replace("\n", newline).encode(encoding)
     target = os.path.realpath(path)  # replace a symlink's target, not the link
     directory = os.path.dirname(target) or "."
 
+    if _is_read_only(target):
+        raise PermissionError(errno.EACCES, "The file is read-only", target)
+
+    if _must_keep_identity(target):
+        return _write_in_place(target, data)
     try:
         fd, tmp_path = tempfile.mkstemp(
             dir=directory, prefix=f".{os.path.basename(target)}.", suffix=".tmp"
         )
     except PermissionError:
         # Directory is read-only but the file itself may be writable.
-        with open(target, "wb") as f:
-            f.write(data)
-        return os.stat(target).st_mtime_ns
+        return _write_in_place(target, data)
 
     try:
         with os.fdopen(fd, "wb") as f:

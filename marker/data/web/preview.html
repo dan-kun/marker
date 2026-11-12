@@ -31,6 +31,14 @@
       font-size: 16px;
       line-height: 1.6;
     }
+    /* A file that is not Markdown, shown as source text */
+    .markdown-body pre.source-file {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+    }
+    .markdown-body .task-list-item { list-style-type: none; }
+    .markdown-body .task-list-item input { margin: 0 0.35em 0.2em -1.4em; vertical-align: middle; }
     .markdown-body {
       max-width: 800px;
       margin: 0 auto;
@@ -66,16 +74,15 @@
   <script src="js/markdown-it.min.js"></script>
   <script src="js/markdown-it-footnote.min.js"></script>
   <script src="js/katex.min.js"></script>
-  <script src="js/auto-render.min.js"></script>
   <script src="js/highlight.min.js"></script>
-  <script src="js/mermaid.min.js"></script>
+  <!-- mermaid.min.js (2.7 MB) is loaded on demand: see loadMermaid() -->
 
   <script>
     // ── Markdown-it setup ─────────────────────────────────────────────────
     // Raw HTML in documents is only enabled when DOMPurify is available to
     // strip scripts, event handlers and other active content from it.
     const sanitize = window.DOMPurify
-      ? (html) => DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
+      ? (html) => DOMPurify.sanitize(html, { ADD_ATTR: ['target'], FORBID_TAGS: ['style'] })
       : null;
 
     const md = window.markdownit({
@@ -83,6 +90,10 @@
       linkify: true,
       typographer: true,
       highlight: function(str, lang) {
+        if (lang === 'mermaid') {
+          // Replaced by the rendered diagram after sanitizing
+          return '<pre class="mermaid-source"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
+        }
         if (lang && window.hljs && hljs.getLanguage(lang)) {
           try {
             return '<pre class="hljs"><code>' +
@@ -98,31 +109,223 @@
       md.use(markdownitFootnote);
     }
 
-    // ── Mermaid setup ──────────────────────────────────────────────────────
-    function initMermaid(isDark) {
-      if (!window.mermaid) return;
+    // ── Math ───────────────────────────────────────────────────────────────
+    // Formulas are picked out while parsing, before Markdown can read their
+    // backslashes and asterisks as escapes and emphasis. They are typeset by
+    // KaTeX after sanitizing (see render()).
+    function mathInline(state, silent) {
+      const src = state.src, start = state.pos;
+      let open, close, display = false;
+      if (src.charCodeAt(start) === 0x24 /* $ */) {
+        display = src.charCodeAt(start + 1) === 0x24;
+        open = close = display ? '$$' : '$';
+      } else if (src.startsWith('\\(', start)) {
+        open = '\\('; close = '\\)';
+      } else if (src.startsWith('\\[', start)) {
+        open = '\\['; close = '\\]'; display = true;
+      } else {
+        return false;
+      }
+      let end = start + open.length;
+      for (;;) {
+        end = src.indexOf(close, end);
+        if (end === -1) return false;
+        let slashes = 0;
+        while (src.charCodeAt(end - 1 - slashes) === 0x5C) slashes++;
+        if (close[0] !== '$' || slashes % 2 === 0) break;
+        end += 1;  // "\$" inside a formula is a dollar sign, not its end
+      }
+      const content = src.slice(start + open.length, end);
+      if (!content.trim()) return false;
+      if (open === '$') {
+        // Pandoc's rule, so that "from $5 to $50" stays text: no space just
+        // inside the dollars, and no digit right after the closing one
+        if (/^\s|\s$/.test(content)) return false;
+        if (/[0-9]/.test(src.charAt(end + 1))) return false;
+      }
+      if (!silent) {
+        const token = state.push(display ? 'math_display' : 'math_inline', 'math', 0);
+        token.content = content;
+      }
+      state.pos = end + close.length;
+      return true;
+    }
+
+    function mathBlock(state, startLine, endLine, silent) {
+      if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+      const lineText = (line) =>
+        state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+      const first = lineText(startLine);
+      const close = first.startsWith('$$') ? '$$' : first.startsWith('\\[') ? '\\]' : null;
+      if (!close) return false;
+
+      let rest = first.slice(2);
+      let line = startLine;
+      const lines = [];
+      if (rest.trimEnd().endsWith(close)) {
+        rest = rest.trimEnd();
+        lines.push(rest.slice(0, rest.length - 2));
+      } else if (rest.includes(close)) {
+        return false;  // "$$x$$ and more text": inline math in a paragraph
+      } else {
+        lines.push(rest);
+        let closed = false;
+        for (line = startLine + 1; line < endLine; line++) {
+          if (state.sCount[line] < state.blkIndent) break;
+          const text = lineText(line).trimEnd();
+          if (text.endsWith(close)) {
+            lines.push(text.slice(0, text.length - 2));
+            closed = true;
+            break;
+          }
+          lines.push(text);
+        }
+        if (!closed) return false;
+      }
+      if (silent) return true;
+      const token = state.push('math_display', 'math', 0);
+      token.block = true;
+      token.content = lines.join('\n');
+      token.map = [startLine, line + 1];
+      state.line = line + 1;
+      return true;
+    }
+
+    md.inline.ruler.before('escape', 'math', mathInline);
+    md.block.ruler.before('fence', 'math', mathBlock,
+                          { alt: ['paragraph', 'reference', 'blockquote', 'list'] });
+    md.renderer.rules.math_inline = (tokens, i) =>
+      '<span class="math-inline">' + md.utils.escapeHtml(tokens[i].content) + '</span>';
+    md.renderer.rules.math_display = (tokens, i, options, env, self) => {
+      const tag = tokens[i].block ? 'div' : 'span';
+      return `<${tag} class="math-display"${self.renderAttrs(tokens[i])}>` +
+        md.utils.escapeHtml(tokens[i].content) + `</${tag}>` + (tokens[i].block ? '\n' : '');
+    };
+
+    // Heading ids in GitHub's style ("My Title" → #my-title), so that
+    // in-document links such as [Install](#install) have a target.
+    md.core.ruler.push('heading_ids', (state) => {
+      const seen = new Map();
+      state.tokens.forEach((token, i) => {
+        if (token.type !== 'heading_open') return;
+        const text = state.tokens[i + 1].children
+          .filter((t) => t.type === 'text' || t.type === 'code_inline')
+          .map((t) => t.content).join('');
+        let slug = text.trim().toLowerCase()
+          .replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+        if (!slug) return;
+        const count = seen.get(slug) || 0;
+        seen.set(slug, count + 1);
+        token.attrSet('id', count ? `${slug}-${count}` : slug);
+      });
+    });
+
+    // Source lines: each block remembers which editor lines it came from,
+    // so scrolling can follow the text instead of a percentage.
+    md.core.ruler.push('source_lines', (state) => {
+      for (const token of state.tokens) {
+        if (token.map && token.nesting !== -1 && token.type !== 'fence') {
+          token.attrSet('data-line', String(token.map[0]));
+          token.attrSet('data-line-end', String(token.map[1]));
+        }
+      }
+    });
+
+    // Task lists: "- [ ] todo" and "- [x] done" become read-only checkboxes.
+    md.core.ruler.push('task_lists', (state) => {
+      const tokens = state.tokens;
+      for (let i = 2; i < tokens.length; i++) {
+        const inline = tokens[i];
+        if (inline.type !== 'inline' || tokens[i - 1].type !== 'paragraph_open' ||
+            tokens[i - 2].type !== 'list_item_open') continue;
+        const first = inline.children[0];
+        const match = first && first.type === 'text' && /^\[([ xX])\]\s+/.exec(first.content);
+        if (!match) continue;
+        first.content = first.content.slice(match[0].length);
+        const box = new state.Token('html_inline', '', 0);
+        box.content = '<input type="checkbox" disabled' + (match[1] === ' ' ? '' : ' checked') + '> ';
+        inline.children.unshift(box);
+        tokens[i - 2].attrJoin('class', 'task-list-item');
+        for (let j = i - 3; j >= 0; j--) {  // the list this item belongs to
+          if (tokens[j].level === tokens[i - 2].level - 1 && /_list_open$/.test(tokens[j].type)) {
+            if (!/contains-task-list/.test(tokens[j].attrGet('class') || '')) {
+              tokens[j].attrJoin('class', 'contains-task-list');
+            }
+            break;
+          }
+        }
+      }
+    });
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let _isDark = false;
+    let _mermaidCounter = 0;
+    let _renderGeneration = 0;
+    // The app shows one document at a time and tells us which (docId); we
+    // remember where each one was scrolled to, so switching tabs and
+    // re-rendering while typing both keep the reader's place.
+    let _docId = null;
+    const _scrollByDoc = new Map();
+
+    // ── Mermaid ────────────────────────────────────────────────────────────
+    // The library is only loaded once a document contains a diagram, and
+    // rendered SVGs are cached by source so that typing elsewhere in the
+    // document does not redraw (and flicker) every diagram.
+    const MERMAID_CACHE_SIZE = 100;
+    const _mermaidCache = new Map();
+    let _mermaidLoading = null;
+    // Not "is window.mermaid set?": a heading called "Mermaid" gets
+    // id="mermaid", and the browser exposes that element under the same name.
+    let _mermaidReady = false;
+
+    function initMermaid() {
+      if (!_mermaidReady) return;
       mermaid.initialize({
         startOnLoad: false,
-        theme: isDark ? 'dark' : 'default',
+        theme: _isDark ? 'dark' : 'default',
         securityLevel: 'strict',
       });
     }
-    initMermaid(false);
 
-    // ── State ──────────────────────────────────────────────────────────────
-    let _mermaidCounter = 0;
-    let _renderGeneration = 0;
-    let _scrollPercent = null;
+    function loadMermaid() {
+      if (!_mermaidLoading) {
+        _mermaidLoading = new Promise((resolve) => {
+          const script = document.createElement('script');
+          script.src = 'js/mermaid.min.js';
+          script.onload = () => { _mermaidReady = true; initMermaid(); resolve(true); };
+          script.onerror = () => resolve(false);
+          document.head.appendChild(script);
+        });
+      }
+      return _mermaidLoading;
+    }
+
+    async function renderDiagram(code) {
+      const key = (_isDark ? 'dark|' : 'light|') + code;
+      const cached = _mermaidCache.get(key);
+      if (cached !== undefined) return cached;
+      const { svg } = await mermaid.render(`mermaid-${++_mermaidCounter}`, code);
+      if (_mermaidCache.size >= MERMAID_CACHE_SIZE) {
+        _mermaidCache.delete(_mermaidCache.keys().next().value);  // oldest entry
+      }
+      _mermaidCache.set(key, svg);
+      return svg;
+    }
 
     // ── Theme ──────────────────────────────────────────────────────────────
     function setTheme(isDark) {
+      _isDark = isDark;
       document.body.classList.toggle('dark', isDark);
       document.body.classList.toggle('light', !isDark);
       document.getElementById('hljs-theme').href =
         isDark ? 'css-vendor/highlight-dark.min.css' : 'css-vendor/highlight-light.min.css';
       document.getElementById('marker-theme').href =
         isDark ? 'css/preview-dark.css' : 'css/preview-light.css';
-      initMermaid(isDark);
+      initMermaid();
+      // Diagrams are drawn in the theme's colours: draw them again
+      if (_last && document.querySelector('#content .mermaid')) {
+        render(_last.text, _last.baseUri, undefined, _last.docId, _last.syntax);
+      }
     }
 
     // ── Relative URLs ──────────────────────────────────────────────────────
@@ -144,48 +347,73 @@
       }
     }
 
+    // ── Files that are not Markdown ────────────────────────────────────────
+    // Shown as they are, with syntax colours, instead of being read as
+    // Markdown (which turns "# comment" in a script into a heading).
+    const MAX_HIGHLIGHT_CHARS = 300000;
+
+    function sourceHtml(text, syntax) {
+      let body = null;
+      if (window.hljs && syntax !== 'plaintext' && hljs.getLanguage(syntax) &&
+          text.length <= MAX_HIGHLIGHT_CHARS) {
+        try {
+          body = hljs.highlight(text, { language: syntax, ignoreIllegals: true }).value;
+        } catch (_) {}
+      }
+      if (body === null) body = md.utils.escapeHtml(text);
+      const lines = text.split('\n').length;
+      return `<pre class="hljs source-file" data-line="0" data-line-end="${lines}"><code>${body}</code></pre>`;
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────
-    async function render(markdownText, baseUri) {
+    // scrollPercent (0..1), when given, is where the page is left after
+    // rendering; otherwise the document (docId) returns to where it was.
+    // syntax, when given, shows the text as source code in that language.
+    let _last = null;
+
+    async function render(markdownText, baseUri, scrollPercent, docId, syntax) {
       const generation = ++_renderGeneration;
       const emptyState = document.getElementById('empty-state');
       const content = document.getElementById('content');
+      if (docId === undefined || docId === null) docId = _docId;
+      // a percentage, or [line, percent] to follow the editor's top line
+      let scrollTarget = null;
+      if (typeof scrollPercent === 'number' || Array.isArray(scrollPercent)) scrollTarget = scrollPercent;
+      else if (_scrollByDoc.has(docId)) scrollTarget = _scrollByDoc.get(docId);
+      else if (docId !== _docId) scrollTarget = 0;
+
+      _last = { text: markdownText, baseUri, docId, syntax };
 
       if (!markdownText || markdownText.trim() === '') {
+        _docId = docId;
         emptyState.style.display = 'flex';
         content.style.display = 'none';
+        content.replaceChildren();
         return;
       }
 
       emptyState.style.display = 'none';
       content.style.display = 'block';
 
-      // Convert mermaid code blocks to placeholders before MD parsing
-      const mermaidBlocks = [];
-      const processedText = markdownText.replace(
-        /```mermaid\r?\n([\s\S]*?)```/g,
-        (match, code) => {
-          const id = `mermaid-placeholder-${mermaidBlocks.length}`;
-          mermaidBlocks.push({ id, code: code.trim() });
-          return `<div class="mermaid-placeholder" data-id="${id}"></div>`;
-        }
-      );
-
       // Render into a detached element so a slow render never touches the
       // DOM after a newer one has started.
       const fragment = document.createElement('div');
-      const html = md.render(processedText);
-      fragment.innerHTML = sanitize ? sanitize(html) : html;
-      resolveRelativeUrls(fragment, baseUri);
+      if (syntax) {
+        fragment.innerHTML = sourceHtml(markdownText, syntax);
+      } else {
+        const html = md.render(markdownText);
+        fragment.innerHTML = sanitize ? sanitize(html) : html;
+        resolveRelativeUrls(fragment, baseUri);
+      }
 
-      if (window.mermaid) {
-        for (const block of mermaidBlocks) {
-          const placeholder = fragment.querySelector(`[data-id="${block.id}"]`);
-          if (!placeholder) continue;
+      const diagrams = fragment.querySelectorAll('pre.mermaid-source');
+      if (diagrams.length > 0 && await loadMermaid()) {
+        if (generation !== _renderGeneration) return;  // superseded while loading
+        for (const source of diagrams) {
           const wrapper = document.createElement('div');
           try {
-            const { svg } = await mermaid.render(`mermaid-${++_mermaidCounter}`, block.code);
+            wrapper.innerHTML = await renderDiagram(source.textContent.trim());
             wrapper.className = 'mermaid';
-            wrapper.innerHTML = svg;
           } catch (e) {
             wrapper.className = 'mermaid-error';
             const pre = document.createElement('pre');
@@ -193,25 +421,26 @@
             wrapper.appendChild(pre);
           }
           if (generation !== _renderGeneration) return;  // superseded
-          placeholder.replaceWith(wrapper);
+          source.replaceWith(wrapper);
         }
       }
 
-      if (window.renderMathInElement) {
-        renderMathInElement(fragment, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false },
-            { left: '\\(', right: '\\)', display: false },
-            { left: '\\[', right: '\\]', display: true },
-          ],
-          throwOnError: false,
-        });
+      if (window.katex) {
+        for (const el of fragment.querySelectorAll('.math-inline, .math-display')) {
+          try {
+            katex.render(el.textContent, el, {
+              displayMode: el.classList.contains('math-display'),
+              throwOnError: false,
+            });
+          } catch (_) {}  // leave the formula's source showing
+        }
       }
 
       if (generation !== _renderGeneration) return;
+      _docId = docId;
       content.replaceChildren(...fragment.childNodes);
-      if (_scrollPercent !== null) setScrollPercent(_scrollPercent);
+      _lineMapDirty = true;
+      if (scrollTarget !== null) applyScroll(scrollTarget);
     }
 
     // ── Scroll position ────────────────────────────────────────────────────
@@ -222,10 +451,81 @@
     }
 
     function setScrollPercent(pct) {
-      _scrollPercent = pct;
       const el = document.documentElement;
       el.scrollTop = pct * (el.scrollHeight - el.clientHeight);
+      if (_docId !== null) _scrollByDoc.set(_docId, pct);
     }
+
+    function applyScroll(target) {
+      if (Array.isArray(target)) scrollToLine(target[0], target[1]);
+      else setScrollPercent(target);
+    }
+
+    // ── Line-based scroll sync ─────────────────────────────────────────────
+    // _lineMap holds [source line, pixel offset] for every block, in order.
+    // It is rebuilt lazily after anything that can move blocks around.
+    let _lineMap = [];
+    let _lineMapEnd = 0;       // source line just past the last block
+    let _lineMapDirty = true;
+
+    function buildLineMap() {
+      _lineMap = [];
+      _lineMapEnd = 0;
+      for (const el of document.querySelectorAll('#content [data-line]')) {
+        const line = Number(el.dataset.line);
+        if (_lineMap.length === 0 || line > _lineMap[_lineMap.length - 1][0]) {
+          _lineMap.push([line, el.getBoundingClientRect().top + window.scrollY]);
+        }
+        _lineMapEnd = Math.max(_lineMapEnd, Number(el.dataset.lineEnd));
+      }
+      _lineMapDirty = false;
+    }
+
+    // Put source `line` (may be fractional) at the top of the page.
+    // `percent` is the editor's overall position, used at the very top and
+    // bottom so both panes reach their ends together.
+    function scrollToLine(line, percent) {
+      const el = document.documentElement;
+      const max = el.scrollHeight - el.clientHeight;
+      if (_lineMapDirty) buildLineMap();
+      let top;
+      if (percent <= 0.001) top = 0;
+      else if (percent >= 0.999) top = max;
+      else if (_lineMap.length === 0) top = percent * max;
+      else {
+        let lo = 0, hi = _lineMap.length - 1, i = -1;
+        while (lo <= hi) {  // last block starting at or before `line`
+          const mid = (lo + hi) >> 1;
+          if (_lineMap[mid][0] <= line) { i = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const [line0, top0] = i >= 0 ? _lineMap[i] : [0, 0];
+        const [line1, top1] = i + 1 < _lineMap.length
+          ? _lineMap[i + 1] : [Math.max(_lineMapEnd, line0 + 1), el.scrollHeight];
+        const within = Math.min(1, Math.max(0, (line - line0) / Math.max(1, line1 - line0)));
+        top = top0 + (top1 - top0) * within;
+      }
+      el.scrollTop = Math.max(0, Math.min(max, top));
+      if (_docId !== null) _scrollByDoc.set(_docId, max > 0 ? el.scrollTop / max : 0);
+    }
+
+    window.addEventListener('resize', () => { _lineMapDirty = true; });
+    document.addEventListener('load', () => { _lineMapDirty = true; }, true);  // images
+
+    // Double-click a block to jump to its line in the editor.
+    document.addEventListener('dblclick', (event) => {
+      const block = event.target.closest && event.target.closest('#content [data-line]');
+      const handler = window.webkit && window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.marker;
+      if (block && handler) handler.postMessage(Number(block.dataset.line));
+    });
+
+    function forgetDocument(docId) {
+      _scrollByDoc.delete(docId);
+    }
+
+    window.addEventListener('scroll', () => {
+      if (_docId !== null) _scrollByDoc.set(_docId, getScrollPercent());
+    }, { passive: true });
   </script>
 </body>
 </html>

@@ -2,7 +2,6 @@
 38c70a1e7ca91ab40e2d9e6e60129851a717ed1c7d4acbbdd41bf9503791cf68  js/markdown-it.min.js
 e80946f20fd80645e8e066b47559b232e3c4a0e0e8d246f569dab39281009790  js/markdown-it-footnote.min.js
 e6bfe5deebd4c7ccd272055bab63bd3ab2c73b907b6e6a22d352740a81381fd4  js/katex.min.js
-7b57d427ac6270677daf8d8380ded2cc73336f9149a167b8e1fe0d6ef66604ae  js/auto-render.min.js
 837a6fa5b0c736b52bbde2b2b6190f305da3fc9ed41681db5321507057b5c846  js/highlight.min.js
 07e37dfa97b337ccc85365d57eddf99b9706f09db3b59b260d0333b23b343c4b  js/mermaid.min.js
 717bc9ae7853b61f0f76455dddf0ecd4f527a783f42de2ac24684899c1c46258  css-vendor/katex.min.css

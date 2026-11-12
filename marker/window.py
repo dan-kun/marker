@@ -7,11 +7,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
-from . import dialogs
+from . import dialogs, session
 from .file_explorer import FileExplorer
-from .filetypes import syntax_label
 from .format_toolbar import FormatToolbar
 from .menubar import build_menubar
 from .minimap import Minimap
@@ -22,17 +21,10 @@ from .settings import Settings
 from .shortcuts import iter_accels
 from .split_view import MODES
 from .tab_view import TabManager
+from .titles import display, short_labels
 from .utils import Debouncer
 
 SIDEBAR_DEFAULT_WIDTH = 240
-
-
-def _is_within(path: str, folder: str) -> bool:
-    path, folder = os.path.realpath(path), os.path.realpath(folder)
-    try:
-        return os.path.commonpath([path, folder]) == folder
-    except ValueError:
-        return False
 
 
 class MarkerWindow(Adw.ApplicationWindow):
@@ -40,14 +32,17 @@ class MarkerWindow(Adw.ApplicationWindow):
         super().__init__(**kwargs)
 
         self.set_title("Marker")
-        self.set_default_size(1200, 800)
+        self._session = session.load()
+        self.set_default_size(self._session["width"], self._session["height"])
+        if self._session["maximized"]:
+            self.maximize()
 
         # Core components
         self.settings = Settings.get_default()
         self.recents_manager = RecentFilesManager()
         self.tab_manager = TabManager(self, self.recents_manager, self.settings)
         self.file_explorer = FileExplorer()
-        self.search_bar = SearchBar(self.editor, root_provider=lambda: self.file_explorer.root_path)
+        self.search_bar = SearchBar(self.editor, roots_provider=lambda: self.file_explorer.roots)
         self._minimap = Minimap()
 
         # One Gio.Menu shared by the hamburger menu and the menubar
@@ -55,13 +50,17 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         self._tab_handlers: list = []
         self._close_confirmed = False
-        self._sidebar_width = SIDEBAR_DEFAULT_WIDTH
+        self._restoring = False  # reopening the last session: keep its folders as saved
+        # (file manager, path) of the document the sidebar was last told about
+        self._shown_in_explorer: tuple = (None, None)
+        self._sidebar_width = self._session["sidebar-width"]
         self._word_count = Debouncer(200, self._update_word_count)
 
         self._setup_actions()
         self._build_ui()
         self._setup_shortcuts()
         self._connect_signals()
+        self._restore_layout()
 
         self.connect("close-request", self._on_close_request)
         self._save_tick = GLib.timeout_add_seconds(30, self._tick_save_time)
@@ -74,7 +73,7 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     @property
     def preview(self):
-        return self.tab_manager.active_preview
+        return self.tab_manager.preview
 
     @property
     def split_view(self):
@@ -121,6 +120,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_box.set_hexpand(True)
         editor_box.append(self.search_bar)
+        editor_box.append(self._build_conflict_bar())
         editor_box.append(self.tab_manager)
         self._content_paned.set_end_child(editor_box)
 
@@ -183,9 +183,74 @@ class MarkerWindow(Adw.ApplicationWindow):
                                         menu_model=menu))
         header.pack_end(right_box)
 
-        self._title_widget = Adw.WindowTitle(title="Marker", subtitle="")
-        header.set_title_widget(self._title_widget)
+        header.set_title_widget(self._build_title())
         return header
+
+    def _build_title(self):
+        """File name over its folder. Unlike Adw.WindowTitle, a long path is
+        shortened at the start, keeping the folders nearest to the file."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        self._title_label = Gtk.Label(label="Marker", single_line_mode=True, width_chars=5,
+                                      ellipsize=Pango.EllipsizeMode.END)
+        self._title_label.add_css_class("title")
+        self._subtitle_label = Gtk.Label(single_line_mode=True, visible=False,
+                                         ellipsize=Pango.EllipsizeMode.START)
+        self._subtitle_label.add_css_class("subtitle")
+        box.append(self._title_label)
+        box.append(self._subtitle_label)
+        return box
+
+    def _build_conflict_bar(self):
+        """Notice shown when another program changed the file being edited."""
+        bar = Gtk.Box(spacing=8)
+        bar.add_css_class("toolbar")
+        bar.set_margin_start(8)
+        bar.set_margin_end(8)
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        bar.append(icon)
+        self._conflict_label = Gtk.Label(xalign=0, wrap=True, hexpand=True)
+        bar.append(self._conflict_label)
+        self._conflict_reload = Gtk.Button(label="Reload from Disk",
+                                           tooltip_text="Discard your unsaved edits")
+        self._conflict_reload.connect(
+            "clicked", lambda *_: self._with_tab(lambda t: t.file_manager.reload(discard=True))
+        )
+        bar.append(self._conflict_reload)
+        self._conflict_save = Gtk.Button(label="Save It Again",
+                                         tooltip_text="Write the file back where it was")
+        self._conflict_save.connect(
+            "clicked", lambda *_: self._with_tab(lambda t: t.file_manager.save_file())
+        )
+        bar.append(self._conflict_save)
+        self._conflict_keep = Gtk.Button()
+        self._conflict_keep.connect(
+            "clicked", lambda *_: self._with_tab(lambda t: t.file_manager.dismiss_disk_change())
+        )
+        bar.append(self._conflict_keep)
+        bar.set_visible(False)
+        self._conflict_bar = bar
+        return bar
+
+    def _update_conflict_bar(self, fm):
+        missing = fm.missing_on_disk
+        self._conflict_bar.set_visible(missing or fm.changed_on_disk)
+        self._conflict_reload.set_visible(not missing)
+        self._conflict_save.set_visible(missing)
+        if missing:
+            self._conflict_label.set_text(
+                "This file was deleted or moved by another program. "
+                "The text here is the only copy until you save it."
+            )
+            self._conflict_keep.set_label("Dismiss")
+            self._conflict_keep.set_tooltip_text("Hide this notice")
+        else:
+            self._conflict_label.set_text(
+                "This file was changed by another program. Your version has unsaved edits."
+            )
+            self._conflict_keep.set_label("Keep My Edits")
+            self._conflict_keep.set_tooltip_text(
+                "Hide this notice. Saving will ask before replacing the other changes"
+            )
 
     def _build_statusbar(self):
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -197,7 +262,7 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         def label(text, xalign):
             widget = Gtk.Label(label=text, xalign=xalign)
-            widget.add_css_class("dim-label")
+            widget.add_css_class("marker-dim")
             return widget
 
         self._status_pos = label("Ln 1, Col 1", 0)
@@ -215,7 +280,8 @@ class MarkerWindow(Adw.ApplicationWindow):
         spacer.set_hexpand(True)
         bar.append(spacer)
         bar.append(self._status_encoding)
-        bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        self._status_save_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        bar.append(self._status_save_separator)
         bar.append(self._status_save)
         return bar
 
@@ -236,8 +302,15 @@ class MarkerWindow(Adw.ApplicationWindow):
 
         action.connect("change-state", change_state)
         self.add_action(action)
+        self._stateful[name] = action
+
+    def _state(self, name: str):
+        """Current value of one of this window's stateful actions."""
+        state = self._stateful[name].get_state()
+        return state.unpack() if state is not None else None
 
     def _setup_actions(self):
+        self._stateful: dict[str, Gio.SimpleAction] = {}
         simple = {
             "new-file": self._action_new_file,
             "open-file": self._action_open_file,
@@ -247,17 +320,24 @@ class MarkerWindow(Adw.ApplicationWindow):
             "new-tab": lambda *_: self.tab_manager.new_tab(),
             "next-tab": lambda *_: self.tab_manager.next_tab(),
             "prev-tab": lambda *_: self.tab_manager.prev_tab(),
-            "find": lambda *_: self.search_bar.show_search(),
-            "find-replace": lambda *_: self.search_bar.show_replace(),
+            "find": lambda *_: self._in_editor(self.search_bar.show_search),
+            "find-replace": lambda *_: self._in_editor(self.search_bar.show_replace),
             "find-in-dir": lambda *_: self.search_bar.show_dir_search(),
             "toggle-split": self._action_toggle_split,
             "editor-only": lambda *_: self._set_view_mode("editor"),
             "preview-only": lambda *_: self._set_view_mode("preview"),
             "fullscreen": self._action_fullscreen,
-            "zoom-in": lambda *_: self._zoom("zoom_in"),
-            "zoom-out": lambda *_: self._zoom("zoom_out"),
-            "zoom-reset": lambda *_: self._zoom("zoom_reset"),
-            "goto-line": lambda *_: self._show_goto_line_dialog(),
+            "zoom-in": lambda *_: self.tab_manager.set_zoom(self.tab_manager.zoom + 0.1),
+            "zoom-out": lambda *_: self.tab_manager.set_zoom(self.tab_manager.zoom - 0.1),
+            "zoom-reset": lambda *_: self.tab_manager.set_zoom(1.0),
+            "reload": lambda *_: self._with_tab(lambda t: t.file_manager.reload()),
+            "goto-line": lambda *_: self._in_editor(self._show_goto_line_dialog),
+            "undo": lambda *_: self._edit("text.undo"),
+            "redo": lambda *_: self._edit("text.redo"),
+            "cut": lambda *_: self._edit("clipboard.cut"),
+            "copy": lambda *_: self._edit("clipboard.copy"),
+            "paste": lambda *_: self._edit("clipboard.paste"),
+            "select-all": lambda *_: self._edit("selection.select-all"),
             "preferences": self._action_preferences,
             "show-shortcuts": self._action_show_shortcuts,
             "clear-recents": lambda *_: self.recents_manager.clear(),
@@ -284,26 +364,35 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _setup_shortcuts(self):
         app = self.get_application()
+        if app is None:
+            return
         for action, accels in iter_accels():
             app.set_accels_for_action(action, accels)
-
-    def _zoom(self, method: str):
-        """Zoom the active tab's editor and preview together."""
-        tab = self.tab_manager.active_tab
-        if tab is not None:
-            getattr(tab.editor, method)()
-            getattr(tab.preview, method)()
 
     def _with_tab(self, func):
         tab = self.tab_manager.active_tab
         if tab is not None:
             func(tab)
 
+    def _edit(self, action: str):
+        """Run one of the text view's own actions (the Edit menu)."""
+        editor = self.editor
+        if editor is not None:
+            editor.grab_focus()
+            editor.get_view().activate_action(action, None)
+
+    def _in_editor(self, func):
+        """Run func with the editor on screen: finding text or jumping to a
+        line would otherwise act on an editor hidden by "Preview only"."""
+        if self._state("view-mode") == "preview":
+            self._set_view_mode("split")
+        func()
+
     # ── Signals ────────────────────────────────────────────────────────────
 
     def _connect_signals(self):
         self.tab_manager.connect("active-tab-changed", lambda *_: self._connect_active_tab())
-        self.tab_manager.connect("file-opened", self._on_file_opened)
+        self.tab_manager.connect("file-opened", lambda _, path: self._follow(path))
         self.file_explorer.connect("file-activated", self._on_sidebar_file_activated)
         self._recents_section.connect("file-activated", self._on_sidebar_file_activated)
         self.search_bar.connect("open-location", self._on_open_location)
@@ -328,7 +417,7 @@ class MarkerWindow(Adw.ApplicationWindow):
         ]
 
         # Sync UI from the new active tab's state
-        self.lookup_action("view-mode").set_state(GLib.Variant("s", tab.split_view.get_mode()))
+        self._stateful["view-mode"].set_state(GLib.Variant("s", tab.split_view.get_mode()))
         self.search_bar.set_editor(ed)
         self._minimap.set_editor(ed)
 
@@ -348,17 +437,37 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _on_file_changed(self, fm, path, is_modified):
         name = fm.display_name if path else "Marker"
-        self._title_widget.set_title(f"• {name}" if is_modified else name)
-        self._title_widget.set_subtitle(path)
+        self._title_label.set_text(f"• {name}" if is_modified else name)
+        folder = display(os.path.dirname(path)) if path else ""
+        home = os.path.expanduser("~")
+        if folder == home or folder.startswith(home + os.sep):
+            folder = "~" + folder[len(home):]
+        self._subtitle_label.set_text(folder)
+        self._subtitle_label.set_visible(bool(folder))
         self.set_title(f"{name} – Marker" if path else "Marker")
-        self._status_syntax.set_text(syntax_label(path or None))
+        editor = self.editor
+        self._status_syntax.set_text(editor.language_name if editor else "")
         self._status_encoding.set_text(f"{fm.encoding_label} · {fm.newline_label}")
+        self._update_conflict_bar(fm)
         self._update_save_label()
+
+        shown = (fm, path or None)
+        if shown != self._shown_in_explorer:
+            same_tab = self._shown_in_explorer[0] is fm
+            self._shown_in_explorer = shown
+            if same_tab and path:
+                self._follow(path)  # saved under a new name
+            else:
+                # Switching tabs only moves the selection. It does not open
+                # folders, or bring back one that was removed from the sidebar.
+                self.file_explorer.reveal(path or None, expand=False)
 
     def _update_save_label(self):
         fm = self.file_manager
         if fm is None:
             text = ""
+        elif fm.autosave_problem:
+            text = f"Auto-save paused: {fm.autosave_problem}"
         elif fm.is_modified:
             text = "Modified"
         elif fm.last_saved is not None:
@@ -366,15 +475,20 @@ class MarkerWindow(Adw.ApplicationWindow):
         else:
             text = ""
         self._status_save.set_text(text)
+        self._status_save_separator.set_visible(bool(text))
 
     def _tick_save_time(self):
         self._update_save_label()
         return GLib.SOURCE_CONTINUE
 
-    def _on_file_opened(self, tab_manager, path):
-        root = self.file_explorer.root_path
-        if root is None or not _is_within(path, root):
-            self.file_explorer.set_root(os.path.dirname(path))
+    def _follow(self, path: str):
+        """A file was opened, or saved under a new name: show it in the
+        sidebar. With "follow open files" on, a file outside every folder
+        shown brings its own folder along."""
+        if self.settings["explorer-follow"] and not self._restoring \
+                and not self.file_explorer.shows(path):
+            self.file_explorer.add_root(os.path.dirname(path))
+        self.file_explorer.reveal(path)
 
     def _on_sidebar_file_activated(self, widget, path):
         self.open_file(path)
@@ -392,9 +506,16 @@ class MarkerWindow(Adw.ApplicationWindow):
     def _on_view_mode_changed(self, mode: str):
         if mode in MODES and self.split_view is not None:
             self.split_view.set_mode(mode)
+        self._update_minimap_visibility()
+
+    def _update_minimap_visibility(self):
+        # The minimap is a map of the editor: no use while only the preview shows
+        visible = bool(self._state("show-minimap")) and self._state("view-mode") != "preview"
+        self._minimap.set_visible(visible)
+        self._minimap_separator.set_visible(visible)
 
     def _action_toggle_split(self, *_):
-        current = self.lookup_action("view-mode").get_state().get_string()
+        current = self._state("view-mode")
         self._set_view_mode("editor" if current == "split" else "split")
 
     def _on_show_sidebar_changed(self, visible: bool):
@@ -410,8 +531,7 @@ class MarkerWindow(Adw.ApplicationWindow):
             self._sidebar_width = paned.get_position()
 
     def _on_show_minimap_changed(self, visible: bool):
-        self._minimap.set_visible(visible)
-        self._minimap_separator.set_visible(visible)
+        self._update_minimap_visibility()
 
     # ── Action Callbacks ───────────────────────────────────────────────────
 
@@ -424,12 +544,15 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def _action_open_file(self, *_):
         fm = self.file_manager
-        folder = self.file_explorer.root_path
+        roots = self.file_explorer.roots
+        folder = roots[0] if roots else None
         if fm is not None and fm.current_path:
             folder = os.path.dirname(fm.current_path)
-        dialogs.choose_files_to_open(
-            self, lambda paths: [self.open_file(p) for p in paths], folder=folder
-        )
+        def open_all(paths: list[str]):
+            for path in paths:
+                self.open_file(path)
+
+        dialogs.choose_files_to_open(self, open_all, folder=folder)
 
     def _action_fullscreen(self, *_):
         if self.is_fullscreen():
@@ -450,9 +573,15 @@ class MarkerWindow(Adw.ApplicationWindow):
         menu = self._recents_menu
         menu.remove_all()
         files = Gio.Menu()
+        names = short_labels([entry["path"] for entry in recents])
         for entry in recents:
-            item = Gio.MenuItem.new(os.path.basename(entry["path"]), None)
-            item.set_action_and_target_value("win.open-recent", GLib.Variant("s", entry["path"]))
+            # Menu labels take "_" as the marker of a mnemonic: double it
+            item = Gio.MenuItem.new(names[entry["path"]].replace("_", "__"), None)
+            try:
+                target = GLib.Variant("s", entry["path"])
+            except (UnicodeEncodeError, TypeError):
+                continue  # a name that is not valid UTF-8 cannot be an action target
+            item.set_action_and_target_value("win.open-recent", target)
             files.append_item(item)
         menu.append_section(None, files)
         if recents:
@@ -519,7 +648,62 @@ class MarkerWindow(Adw.ApplicationWindow):
             self._close_confirmed = True
             self.close()
 
+    # ── Session ────────────────────────────────────────────────────────────
+
+    def _restore_layout(self):
+        """Apply the remembered panels, view mode and zoom."""
+        state = self._session
+        self.tab_manager.set_zoom(state["zoom"])
+        self.tab_manager.divider.fraction = state["split"]
+        self._set_view_mode(state["view-mode"])
+        if not state["sidebar"]:
+            self.change_action_state("show-sidebar", GLib.Variant("b", False))
+        if not state["minimap"]:
+            self.change_action_state("show-minimap", GLib.Variant("b", False))
+
+    def restore_documents(self):
+        """Reopen the folder and files from the last run (when started
+        without files on the command line)."""
+        state = self._session
+        self._restoring = True
+        try:
+            self.file_explorer.set_roots(state["folders"])
+            tabs = [self.tab_manager.open_file(path) for path in state["files"] if os.path.isfile(path)]
+            # "active" indexes the saved list; files that vanished shift it
+            wanted = state["files"][state["active"]] if state["active"] < len(state["files"]) else None
+            for tab in tabs:
+                if tab is not None and tab.file_manager.current_path == wanted:
+                    self.tab_manager.select(tab)
+        finally:
+            self._restoring = False
+
+    def _save_session(self):
+        tabs = self.tab_manager.tabs()
+        files = [t.file_manager.current_path for t in tabs if t.file_manager.current_path]
+        active = self.file_manager.current_path if self.file_manager else None
+        state = dict(self._session)
+        if not self.is_maximized():
+            # The default size tracks user resizes; get_width() would also
+            # count the client-side shadow and drift on every run.
+            width, height = self.get_default_size()
+            if width > 0 and height > 0:
+                state["width"], state["height"] = width, height
+        state.update({
+            "maximized": self.is_maximized(),
+            "sidebar": self._state("show-sidebar"),
+            "sidebar-width": self._sidebar_width,
+            "minimap": self._state("show-minimap"),
+            "view-mode": self._state("view-mode"),
+            "zoom": self.tab_manager.zoom,
+            "split": round(self.tab_manager.divider.fraction, 3),
+            "folders": self.file_explorer.roots,
+            "files": files,
+            "active": files.index(active) if active in files else 0,
+        })
+        session.save(state)
+
     def _finish_close(self) -> bool:
+        self._save_session()
         if self._save_tick:
             GLib.source_remove(self._save_tick)
             self._save_tick = 0
@@ -530,3 +714,13 @@ class MarkerWindow(Adw.ApplicationWindow):
 
     def open_file(self, path: str):
         return self.tab_manager.open_file(path)
+
+    def open_path(self, path: str):
+        """Open something named on the command line: a folder is added to
+        the sidebar, a file opens in a tab, and a file that does not exist
+        yet opens as a new document with that name."""
+        if os.path.isdir(path):
+            self.file_explorer.add_root(path)
+            self.change_action_state("show-sidebar", GLib.Variant("b", True))
+            return None
+        return self.tab_manager.open_file(path, create=True)

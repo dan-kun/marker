@@ -16,6 +16,9 @@ dependencies = []
 [project.scripts]
 marker = "marker.__main__:main"
 
+[tool.setuptools]
+license-files = ["COPYING"]
+
 [tool.setuptools.dynamic]
 version = { attr = "marker.__version__" }
 
@@ -44,3 +47,9 @@ ignore = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pyright]
+include = ["marker"]
+pythonVersion = "3.10"
+# PyGObject modules are generated at runtime; the types come from pygobject-stubs
+reportMissingModuleSource = false

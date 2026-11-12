@@ -1,5 +1,8 @@
 """Tabs, search and sidebar behaviour."""
 
+import os
+
+import pytest
 from conftest import iterate, needs_display, wait_for
 
 pytestmark = needs_display
@@ -22,9 +25,9 @@ def test_explorer_root_only_changes_for_files_outside_it(window, tmp_path):
     (tmp_path / "docs").mkdir()
     inner = tmp_path / "docs" / "inner.md"
     inner.write_text("x")
-    window.file_explorer.set_root(str(tmp_path))
+    window.file_explorer.set_roots([str(tmp_path)])
     window.open_file(str(inner))
-    assert window.file_explorer.root_path == str(tmp_path)
+    assert window.file_explorer.roots == [str(tmp_path)]
 
 
 def test_settings_apply_to_every_tab(window):
@@ -45,12 +48,12 @@ def test_closed_tabs_are_released(window):
     import weakref
 
     tab = window.tab_manager.new_tab()
-    preview_ref = weakref.ref(tab.preview)
+    refs = [weakref.ref(tab.editor), weakref.ref(tab.editor.get_buffer()), weakref.ref(tab.file_manager)]
     window.tab_manager.close_active_tab()
     del tab
     iterate(0.2)
     gc.collect()
-    assert preview_ref() is None
+    assert [ref() for ref in refs] == [None, None, None]
 
 
 def test_find_next_advances(window):
@@ -105,7 +108,7 @@ def test_escape_closes_search(window):
 def test_folder_search_opens_result_once_at_the_line(window, tmp_path):
     (tmp_path / "notes.md").write_text("one\ntwo\n--weird: query\n")
     (tmp_path / "other.md").write_text("--weird: query too\n")
-    window.file_explorer.set_root(str(tmp_path))
+    window.file_explorer.set_roots([str(tmp_path)])
     bar = window.search_bar
     bar.show_dir_search()
     bar._dir_entry.set_text("--weird: query")  # starts with "-" and has ":"
@@ -122,18 +125,31 @@ def test_folder_search_opens_result_once_at_the_line(window, tmp_path):
     assert window.editor.get_cursor_position() == (3, 1)
 
 
+def explorer_rows(explorer):
+    """[(indent depth, name shown, path)] for every row of the tree."""
+    rows, index = [], 0
+    while (row := explorer._list_box.get_row_at_index(index)) is not None:
+        rows.append(row)
+        index += 1
+    return rows
+
+
+def explorer_paths(explorer, root):
+    return [os.path.relpath(row.path, root) for row in explorer_rows(explorer)]
+
+
 def test_explorer_keeps_expanded_folders_on_refresh(window, tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "x.md").write_text("x")
     explorer = window.file_explorer
-    explorer.set_root(str(tmp_path))
-    dir_row = explorer._list_box.get_row_at_index(0)
-    explorer._list_box.emit("row-activated", dir_row)
-    assert explorer._list_box.get_row_at_index(1).path.endswith("x.md")
+    explorer.set_roots([str(tmp_path)])
+    assert explorer_paths(explorer, tmp_path) == [".", "sub"]
+    explorer._list_box.emit("row-activated", explorer_rows(explorer)[1])
+    assert explorer_paths(explorer, tmp_path) == [".", "sub", "sub/x.md"]
 
     (tmp_path / "sub" / "y.md").write_text("y")
-    assert wait_for(lambda: (r := explorer._list_box.get_row_at_index(2)) is not None
-                    and r.path.endswith("y.md"), timeout=5)
+    assert wait_for(lambda: explorer_paths(explorer, tmp_path) == [".", "sub", "sub/x.md", "sub/y.md"],
+                    timeout=5)
 
 
 def test_view_mode_buttons_follow_the_active_tab(window):
@@ -141,23 +157,27 @@ def test_view_mode_buttons_follow_the_active_tab(window):
     first = tm.active_tab
     window.activate_action("win.preview-only", None)
     assert first.split_view.get_mode() == "preview"
-    second = tm.new_tab()
-    assert window.lookup_action("view-mode").get_state().get_string() == "split"
+    second = tm.new_tab()  # inherits the mode in use
+    assert window.lookup_action("view-mode").get_state().get_string() == "preview"
+    window.activate_action("win.editor-only", None)
+    assert second.split_view.get_mode() == "editor"
     tm.select(first)
     assert window.lookup_action("view-mode").get_state().get_string() == "preview"
-    assert second.split_view.get_mode() == "split"
+    assert first.split_view.get_mode() == "preview"
 
 
 def test_editor_scroll_is_mirrored_in_the_preview(window, monkeypatch):
     tab = window.tab_manager.active_tab
-    fractions = []
-    monkeypatch.setattr(tab.preview, "scroll_to_fraction", fractions.append)
+    calls = []
+    monkeypatch.setattr(window.preview, "scroll_to_line", lambda *args: calls.append(args))
     tab.editor.set_text("line\n" * 2000)
     vadj = tab.editor.get_vadjustment()
     assert wait_for(lambda: vadj.get_upper() > vadj.get_page_size() * 2)
     vadj.set_value((vadj.get_upper() - vadj.get_page_size()) / 2)
-    assert wait_for(lambda: fractions)
-    assert abs(fractions[-1] - 0.5) < 0.05
+    assert wait_for(lambda: calls)
+    line, fraction = calls[-1]
+    assert abs(fraction - 0.5) < 0.05
+    assert 900 < line < 1100  # the editor's top line, about halfway down 2000 lines
 
 
 def test_minimap_viewport_matches_drawn_lines_for_short_documents(window):
@@ -167,3 +187,84 @@ def test_minimap_viewport_matches_drawn_lines_for_short_documents(window):
     scale, content_h = minimap._layout(600)
     assert scale == 1.0
     assert content_h == minimap.HEADING_HEIGHT + 6 * minimap.LINE_HEIGHT  # not the widget height
+
+
+def test_editor_scheme_follows_dark_mode(window):
+    from gi.repository import Adw
+
+    style = Adw.StyleManager.get_default()
+    buffer = window.editor.get_buffer()
+    try:
+        style.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        iterate(0.1)
+        assert buffer.get_style_scheme().get_id() == "Adwaita-dark"
+        # editors created while dark start dark too
+        assert window.tab_manager.new_tab().editor.get_buffer().get_style_scheme().get_id() == "Adwaita-dark"
+        style.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+        iterate(0.1)
+        assert buffer.get_style_scheme().get_id() == "Adwaita"
+    finally:
+        style.set_color_scheme(Adw.ColorScheme.DEFAULT)
+
+
+def test_folder_search_works_in_a_hidden_root_and_skips_hidden_subfolders(window, tmp_path):
+    root = tmp_path / ".notes"
+    (root / ".git").mkdir(parents=True)
+    (root / "sub").mkdir()
+    (root / "a.md").write_text("needle\n")
+    (root / "sub" / "b.md").write_text("x\nneedle\n")
+    (root / ".git" / "c.md").write_text("needle\n")
+    window.file_explorer.set_roots([str(root)])
+    bar = window.search_bar
+    bar.show_dir_search()
+    bar._dir_entry.set_text("needle")
+    bar._on_dir_search()
+    assert wait_for(lambda: getattr(bar._dir_results.get_row_at_index(0), "location", None))
+    rows = []
+    index = 0
+    while (row := bar._dir_results.get_row_at_index(index)) is not None:
+        rows.append(row.location)
+        index += 1
+    assert sorted(rows) == [(str(root / "a.md"), 1), (str(root / "sub" / "b.md"), 2)]
+
+
+def test_open_path_accepts_folders_and_new_files(window, dialogs_log, tmp_path):
+    window.activate_action("win.show-sidebar", None)  # hide it
+    assert window.open_path(str(tmp_path)) is None
+    assert window.file_explorer.roots == [str(tmp_path)]
+    assert window.lookup_action("show-sidebar").get_state().get_boolean()
+
+    new = tmp_path / "new.md"
+    tab = window.open_path(str(new))
+    assert tab.file_manager.current_path == str(new)
+    assert tab.page.get_title() == "new.md"
+    assert not new.exists() and not tab.file_manager.is_modified
+    tab.file_manager.save_file()
+    assert new.read_text() == ""
+    assert dialogs_log == []
+
+    # a missing folder is still an error, and plain open_file never creates
+    assert window.open_path(str(tmp_path / "nope" / "x.md")) is None
+    assert window.open_file(str(tmp_path / "other.md")) is None
+    assert len(dialogs_log) == 2
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # the fallback uses Gtk.MessageDialog
+def test_message_dialogs_work_without_adw_message_dialog(window, monkeypatch):
+    """libadwaita 1.1 has no Adw.MessageDialog; the Gtk fallback must behave the same."""
+    from gi.repository import Gtk
+
+    from marker import dialogs
+
+    monkeypatch.setattr(dialogs, "_HAS_ADW_MESSAGE_DIALOG", False)
+    answers = []
+    dialog = dialogs.ask(
+        window, "Go to Line", "", [("cancel", "Cancel", None), ("go", "Go", "suggested")],
+        default="go", on_response=answers.append, extra_child=Gtk.Entry(),
+    )
+    assert isinstance(dialog.widget, Gtk.MessageDialog)
+    dialog.respond("go")
+    closed = dialogs.ask_unsaved_changes(window, "x.md", answers.append)
+    closed.widget.close()
+    iterate(0.2)
+    assert answers == ["go", "cancel"]

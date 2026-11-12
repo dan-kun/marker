@@ -7,3 +7,6 @@ marker/data/web/css-vendor/
 *.egg-info/
 dist/
 build/
+.venv/
+# Claude Code agent worktrees
+.claude/worktrees/
